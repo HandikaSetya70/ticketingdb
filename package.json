@@ -1,6 +1,7 @@
 {
   "name": "ticketing-system-api",
   "version": "1.0.0",
+  "type":"module",
   "description": "Backend API for ticketing system with blockchain revocation",
   "scripts": {
     "dev": "vercel dev",
