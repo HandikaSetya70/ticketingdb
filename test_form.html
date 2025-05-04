@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ticketing System API Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            line-height: 1.6;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 30px;
+        }
+        .form-section {
+            margin-bottom: 30px;
+            padding: 20px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input, textarea {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 15px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .response {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-radius: 4px;
+            min-height: 100px;
+        }
+        .tabs {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid #ddd;
+        }
+        .tab {
+            padding: 10px 20px;
+            cursor: pointer;
+            background-color: #f5f5f5;
+            margin-right: 5px;
+            border-radius: 5px 5px 0 0;
+        }
+        .tab.active {
+            background-color: #4CAF50;
+            color: white;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <h1>Ticketing System API Test</h1>
+    
+    <div class="tabs">
+        <div class="tab active" data-tab="add-user">Add User</div>
+        <div class="tab" data-tab="verify-user">Verify User</div>
+        <div class="tab" data-tab="add-payment">Add Payment</div>
+        <div class="tab" data-tab="verify-payment">Verify Payment</div>
+        <div class="tab" data-tab="create-ticket">Create Ticket</div>
+        <div class="tab" data-tab="validate-ticket">Validate Ticket</div>
+        <div class="tab" data-tab="revoke-ticket">Revoke Ticket</div>
+    </div>
+    
+    <!-- Add User Form -->
+    <div id="add-user" class="tab-content active">
+        <div class="form-section">
+            <h2>Add User</h2>
+            <form id="addUserForm">
+                <label for="id_number">ID Number:</label>
+                <input type="text" id="id_number" name="id_number" required>
+                
+                <label for="id_name">Name:</label>
+                <input type="text" id="id_name" name="id_name" required>
+                
+                <label for="dob">Date of Birth:</label>
+                <input type="date" id="dob" name="dob" required>
+                
+                <label for="id_picture_url">ID Picture URL:</label>
+                <input type="url" id="id_picture_url" name="id_picture_url" required>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="addUserResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Verify User Form -->
+    <div id="verify-user" class="tab-content">
+        <div class="form-section">
+            <h2>Verify User</h2>
+            <form id="verifyUserForm">
+                <label for="verify_user_id">User ID:</label>
+                <input type="text" id="verify_user_id" name="user_id" required>
+                
+                <label for="verify_admin_id">Admin ID:</label>
+                <input type="text" id="verify_admin_id" name="admin_id" required value="admin-1234">
+                
+                <label for="verify_status">Status:</label>
+                <select id="verify_status" name="status" required>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                </select>
+                
+                <label for="verify_comments">Comments:</label>
+                <textarea id="verify_comments" name="comments" required></textarea>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="verifyUserResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Add Payment Form -->
+    <div id="add-payment" class="tab-content">
+        <div class="form-section">
+            <h2>Add Payment</h2>
+            <form id="addPaymentForm">
+                <label for="payment_user_id">User ID:</label>
+                <input type="text" id="payment_user_id" name="user_id" required>
+                
+                <label for="amount">Amount:</label>
+                <input type="number" id="amount" name="amount" step="0.01" required>
+                
+                <label for="payment_proof_url">Payment Proof URL:</label>
+                <input type="url" id="payment_proof_url" name="payment_proof_url" required>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="addPaymentResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Verify Payment Form -->
+    <div id="verify-payment" class="tab-content">
+        <div class="form-section">
+            <h2>Verify Payment</h2>
+            <form id="verifyPaymentForm">
+                <label for="verify_payment_id">Payment ID:</label>
+                <input type="text" id="verify_payment_id" name="payment_id" required>
+                
+                <label for="payment_admin_id">Admin ID:</label>
+                <input type="text" id="payment_admin_id" name="admin_id" required value="admin-1234">
+                
+                <label for="payment_status">Status:</label>
+                <select id="payment_status" name="status" required>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="failed">Failed</option>
+                </select>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="verifyPaymentResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Create Ticket Form -->
+    <div id="create-ticket" class="tab-content">
+        <div class="form-section">
+            <h2>Create Ticket</h2>
+            <form id="createTicketForm">
+                <label for="ticket_user_id">User ID:</label>
+                <input type="text" id="ticket_user_id" name="user_id" required>
+                
+                <label for="ticket_payment_id">Payment ID:</label>
+                <input type="text" id="ticket_payment_id" name="payment_id" required>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="createTicketResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Validate Ticket Form -->
+    <div id="validate-ticket" class="tab-content">
+        <div class="form-section">
+            <h2>Validate Ticket</h2>
+            <form id="validateTicketForm">
+                <label for="validate_ticket_id">Ticket ID:</label>
+                <input type="text" id="validate_ticket_id" name="ticket_id" required>
+                
+                <label for="validate_user_id">User ID:</label>
+                <input type="text" id="validate_user_id" name="user_id" required>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="validateTicketResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Revoke Ticket Form -->
+    <div id="revoke-ticket" class="tab-content">
+        <div class="form-section">
+            <h2>Revoke Ticket</h2>
+            <form id="revokeTicketForm">
+                <label for="revoke_ticket_id">Ticket ID:</label>
+                <input type="text" id="revoke_ticket_id" name="ticket_id" required>
+                
+                <label for="revoke_admin_id">Admin ID:</label>
+                <input type="text" id="revoke_admin_id" name="admin_id" required value="admin-1234">
+                
+                <label for="revoke_reason">Reason:</label>
+                <textarea id="revoke_reason" name="reason" required></textarea>
+                
+                <button type="submit">Submit</button>
+            </form>
+            <div class="response">
+                <h3>Response:</h3>
+                <pre id="revokeTicketResponse"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Base URL for API calls - update this to your domain
+        const baseUrl = 'http://setya.fwh.is';
+        
+        // Tab switching
+        document.querySelectorAll('.tab').forEach(tab => {
+            tab.addEventListener('click', function() {
+                // Remove active class from all tabs and contents
+                document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                
+                // Add active class to clicked tab
+                this.classList.add('active');
+                
+                // Show corresponding content
+                const tabId = this.getAttribute('data-tab');
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+        
+        // Function to make API calls
+        async function callApi(endpoint, data) {
+            try {
+                const response = await fetch(baseUrl + endpoint, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(data)
+                });
+                
+                return await response.json();
+            } catch (error) {
+                return { status: 'error', message: error.message };
+            }
+        }
+        
+        // Add event listeners for forms
+        document.getElementById('addUserForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const data = {
+                id_number: document.getElementById('id_number').value,
+                id_name: document.getElementById('id_name').value,
+                dob: document.getElementById('dob').value,
+                id_picture_url: document.getElementById('id_picture_url').value
+            };
+            
+            const response = await callApi('/api/users/add_user', data);
+            document.getElementById('addUserResponse').textContent = JSON.stringify(response, null, 2);
+        });
+        
+        document.getElementById('verifyUserForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const data = {
+                user_id: document.getElementById('verify_user_id').value,
+                admin_id: document.getElementById('verify_admin_id').value,
+                status: document.getElementById('verify_status').value,
+                comments: document.getElementById('verify_comments').value
+            };
+            
+            const response = await callApi('/api/users/verify', data);
+            document.getElementById('verifyUserResponse').textContent = JSON.stringify(response, null, 2);
+        });
+        
+        document.getElementById('addPaymentForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const data = {
+                user_id: document.getElementById('payment_user_id').value,
+                amount: parseFloat(document.getElementById('amount').value),
+                payment_proof_url: document.getElementById('payment_proof_url').value
+            };
+            
+            const response = await callApi('/api/payments/add_payment', data);
+            document.getElementById('addPaymentResponse').textContent = JSON.stringify(response, null, 2);
+        });
+        
+        document.getElementById('verifyPaymentForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const data = {
+                payment_id: document.getElementById('verify_payment_id').value,
+                admin_id: document.getElementById('payment_admin_id').value
