@@ -1,10 +1,5 @@
 {
   "version": 2,
-  "env": {
-  "SUPABASE_URL": "SUPABASE_URL",
-  "SUPABASE_ANON_KEY": "SUPABASE_ANON_KEY",
-  "SUPABASE_SERVICE_KEY": "SUPABASE_SERVICE_KEY"
-  },
   "headers": [
     {
       "source": "/api/(.*)",
