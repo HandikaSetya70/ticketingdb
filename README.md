@@ -55,10 +55,10 @@ SUPABASE_SERVICE_KEY=your_service_key
 ```bash
 npm install
 
-2. Run locally
-'''bash
+--Run locally
+
 npm run dev
 
-3. Deploy to Vercel
-'''bash
+--Deploy to Vercel
+
 npm run deploy
