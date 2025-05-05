@@ -1,5 +1,4 @@
 import { createClient } from '@supabase/supabase-js'
-import { applyCors, sendErrorResponse, sendSuccessResponse } from '../../utils/cors';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -7,8 +6,14 @@ const supabase = createClient(
 )
 
 export default async function handler(req, res) {
-  if (applyCors(req, res)) {
-    return; // Request was handled by CORS (it was an OPTIONS request)
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', 'http://setya.fwh.is'); // Use '*' during testing, later restrict to your domain
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // Handle OPTIONS preflight request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
   }
 
   // Only allow POST requests
