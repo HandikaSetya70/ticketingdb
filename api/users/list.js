@@ -6,6 +6,16 @@ const supabase = createClient(
 )
 
 export default async function handler(req, res) {
+  // Set CORS headers
+  res.setHeader('Access-Control-Allow-Origin', 'https://setya.fwh.is');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
+  // Handle OPTIONS method for preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   // Only allow GET requests
   if (req.method !== 'GET') {
     return res.status(405).json({ 
@@ -24,6 +34,7 @@ export default async function handler(req, res) {
       })
     }
 
+    // Rest of your existing code remains the same
     const token = authHeader.split(' ')[1]
     
     // Verify the admin token and get user details
