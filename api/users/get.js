@@ -1,4 +1,5 @@
 import { createClient } from '@supabase/supabase-js'
+import { applyCors, sendErrorResponse, sendSuccessResponse } from '../utils/cors';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -6,6 +7,10 @@ const supabase = createClient(
 )
 
 export default async function handler(req, res) {
+  if (applyCors(req, res)) {
+    return; // Request was handled by CORS (it was an OPTIONS request)
+  }
+
   // Only allow GET requests
   if (req.method !== 'GET') {
     return res.status(405).json({ 
