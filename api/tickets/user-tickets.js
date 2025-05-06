@@ -82,7 +82,10 @@ export default async function handler(req, res) {
           event_id,
           event_name,
           event_date,
-          venue
+          venue,
+          category,
+          event_description,
+          event_image_url
         ),
         payments (
           payment_id,
