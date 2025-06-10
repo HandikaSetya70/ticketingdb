@@ -1,33 +1,24 @@
 // /api/tickets/buy.js
-// Ticket purchase initiation with PayPal integration
+// Ticket purchase with Supabase Auth
 
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
+import { createRequire } from 'module';
+
+const require = createRequire(import.meta.url);
+const paypal = require('@paypal/checkout-server-sdk');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// 🔧 FIXED: Use dynamic import for PayPal SDK (CommonJS module)
-let paypal;
-let client;
+// PayPal environment setup
+const environment = process.env.NODE_ENV === 'production' 
+  ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
+  : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
 
-// Initialize PayPal SDK
-async function initializePayPal() {
-  if (!paypal) {
-    paypal = await import('@paypal/checkout-server-sdk');
-    
-    // PayPal environment setup
-    const environment = process.env.NODE_ENV === 'production' 
-      ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
-      : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
-
-    client = new paypal.core.PayPalHttpClient(environment);
-  }
-  return { paypal, client };
-}
+const client = new paypal.core.PayPalHttpClient(environment);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -38,10 +29,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 🔧 FIXED: Initialize PayPal first
-    const { paypal, client } = await initializePayPal();
-
-    // Get user from token
+    // 🔧 FIXED: Supabase Auth verification
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
       return res.status(401).json({
@@ -50,15 +38,39 @@ export default async function handler(req, res) {
       });
     }
 
-    // 🔧 FIXED: Re-enabled JWT verification
-    let userId;
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      userId = decoded.sub || decoded.user_id;
-    } catch (error) {
+    // ✅ PROPER: Verify Supabase Auth token
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      console.log('Supabase auth error:', authError?.message);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid or expired token'
+      });
+    }
+
+    const userId = user.id;
+    console.log('Authenticated user:', userId);
+
+    // Get user profile from your users table
+    const { data: userProfile, error: profileError } = await supabase
+      .from('users')
+      .select('user_id, auth_id, verification_status, role')
+      .eq('auth_id', userId)
+      .single();
+
+    if (profileError || !userProfile) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User profile not found'
+      });
+    }
+
+    // Check if user is verified
+    if (userProfile.verification_status !== 'approved') {
+      return res.status(403).json({
+        status: 'error',
+        message: 'Account not verified. Please complete verification to purchase tickets.'
       });
     }
 
@@ -122,13 +134,13 @@ export default async function handler(req, res) {
     const unitPrice = parseFloat(event.ticket_price || 0);
     const totalAmount = unitPrice * quantity;
 
-    // Create payment record
+    // Create payment record - use userProfile.user_id (your internal user ID)
     const paymentId = crypto.randomUUID();
     const { data: payment, error: paymentError } = await supabase
       .from('payments')
       .insert({
         payment_id: paymentId,
-        user_id: userId,
+        user_id: userProfile.user_id, // Use your internal user_id
         amount: totalAmount,
         payment_status: 'pending',
         payment_method: 'paypal',
@@ -138,6 +150,7 @@ export default async function handler(req, res) {
       .single();
 
     if (paymentError) {
+      console.log('Payment creation error:', paymentError);
       throw new Error('Failed to create payment record');
     }
 
@@ -159,6 +172,8 @@ export default async function handler(req, res) {
       throw new Error('Failed to reserve tickets');
     }
 
+    console.log(`Reserved ${quantity} tickets for event ${event.event_name}`);
+
     // Create PayPal order
     const request = new paypal.orders.OrdersCreateRequest();
     request.prefer('return=representation');
@@ -171,7 +186,8 @@ export default async function handler(req, res) {
             currency_code: 'USD',
             value: totalAmount.toFixed(2)
           },
-          description: `${quantity} ticket(s) for ${event.event_name}`
+          description: `${quantity} ticket(s) for ${event.event_name}`,
+          custom_id: userProfile.user_id // Your internal user ID for tracking
         }
       ],
       application_context: {
@@ -184,9 +200,13 @@ export default async function handler(req, res) {
 
     let paypalOrder;
     try {
+      console.log('Creating PayPal order for amount:', totalAmount);
       const response = await client.execute(request);
       paypalOrder = response.result;
+      console.log('PayPal order created:', paypalOrder.id);
     } catch (paypalError) {
+      console.log('PayPal error:', paypalError);
+      
       // Cleanup on PayPal error
       await supabase
         .from('events')
