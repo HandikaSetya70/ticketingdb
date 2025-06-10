@@ -1,7 +1,7 @@
 {
   "name": "ticketing-system-api",
   "version": "1.0.0",
-  "type":"module",
+  "type": "module",
   "description": "Backend API for ticketing system with blockchain revocation",
   "scripts": {
     "dev": "vercel dev",
@@ -9,10 +9,10 @@
     "deploy:prod": "vercel deploy --prod"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.4",
-    "jsonwebtoken": "^9.0.2",
     "@paypal/checkout-server-sdk": "^1.0.3",
-    "ethers": "^5.7.2"
+    "@supabase/supabase-js": "^2.49.4",
+    "ethers": "^5.7.2",
+    "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
     "vercel": "^32.0.0"
