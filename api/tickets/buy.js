@@ -22,22 +22,36 @@ export default async function handler(req, res) {
     const paypalModule = await import('@paypal/checkout-server-sdk');
     const paypal = paypalModule.default || paypalModule;
 
-    // Debug logging for PayPal credentials
-    console.log('PayPal Environment Debug:', {
+    // Debug logging for ALL PayPal environment variables
+    console.log('PayPal Environment Debug - ALL VARIABLES:', {
       NODE_ENV: process.env.NODE_ENV,
-      CLIENT_ID_LENGTH: process.env.PAYPAL_CLIENT_ID?.length || 0,
-      CLIENT_ID_PREFIX: process.env.PAYPAL_CLIENT_ID?.substring(0, 10) || 'MISSING',
-      CLIENT_SECRET_LENGTH: process.env.PAYPAL_CLIENT_SECRET?.length || 0,
-      CLIENT_SECRET_PREFIX: process.env.PAYPAL_CLIENT_SECRET?.substring(0, 10) || 'MISSING',
-      // Full secret for debugging (remove this in production!)
-      FULL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET || 'NOT_SET'
+      // PayPal credentials
+      PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID || 'NOT_SET',
+      PAYPAL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET || 'NOT_SET',
+      PAYPAL_WEBHOOK_ID: process.env.PAYPAL_WEBHOOK_ID || 'NOT_SET',
+      // App configuration
+      APP_SCHEME: process.env.APP_SCHEME || 'NOT_SET',
+      // Supabase (for reference)
+      SUPABASE_URL: process.env.SUPABASE_URL || 'NOT_SET',
+      SUPABASE_SERVICE_KEY: process.env.SUPABASE_SERVICE_KEY ? 'SET (length: ' + process.env.SUPABASE_SERVICE_KEY.length + ')' : 'NOT_SET',
+      // Other potential PayPal vars
+      PAYPAL_ENVIRONMENT: process.env.PAYPAL_ENVIRONMENT || 'NOT_SET',
+      PAYPAL_MODE: process.env.PAYPAL_MODE || 'NOT_SET',
+      PAYPAL_SANDBOX_CLIENT_ID: process.env.PAYPAL_SANDBOX_CLIENT_ID || 'NOT_SET',
+      PAYPAL_SANDBOX_CLIENT_SECRET: process.env.PAYPAL_SANDBOX_CLIENT_SECRET || 'NOT_SET',
+      PAYPAL_LIVE_CLIENT_ID: process.env.PAYPAL_LIVE_CLIENT_ID || 'NOT_SET',
+      PAYPAL_LIVE_CLIENT_SECRET: process.env.PAYPAL_LIVE_CLIENT_SECRET || 'NOT_SET',
+      // Vercel specific
+      VERCEL: process.env.VERCEL || 'NOT_SET',
+      VERCEL_ENV: process.env.VERCEL_ENV || 'NOT_SET',
+      VERCEL_URL: process.env.VERCEL_URL || 'NOT_SET'
     });
 
     // PayPal environment setup
-    const environment = new paypal.core.SandboxEnvironment(
-      process.env.PAYPAL_CLIENT_ID, 
-      process.env.PAYPAL_CLIENT_SECRET
-    );
+    const environment = process.env.NODE_ENV === 'production' 
+      ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
+      : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
+
     const client = new paypal.core.PayPalHttpClient(environment);
 
     // 🔧 FIXED: Supabase Auth verification
@@ -185,10 +199,8 @@ export default async function handler(req, res) {
 
     console.log(`Reserved ${quantity} tickets for event ${event.event_name}`);
 
-    // Create PayPal order
-    const request = new paypal.orders.OrdersCreateRequest();
-    request.prefer('return=representation');
-    request.requestBody({
+    // Create PayPal order with proper request body structure
+    const orderPayload = {
       intent: 'CAPTURE',
       purchase_units: [
         {
@@ -198,7 +210,7 @@ export default async function handler(req, res) {
             value: totalAmount.toFixed(2)
           },
           description: `${quantity} ticket(s) for ${event.event_name}`,
-          custom_id: userProfile.user_id // Your internal user ID for tracking
+          custom_id: userProfile.user_id.toString() // Ensure it's a string
         }
       ],
       application_context: {
@@ -207,26 +219,42 @@ export default async function handler(req, res) {
         return_url: `${process.env.APP_SCHEME || 'ticketapp'}://payment-success?payment_id=${paymentId}`,
         cancel_url: `${process.env.APP_SCHEME || 'ticketapp'}://payment-cancel?payment_id=${paymentId}`
       }
-    });
+    };
+
+    console.log('PayPal order payload:', JSON.stringify(orderPayload, null, 2));
+
+    const request = new paypal.orders.OrdersCreateRequest();
+    request.prefer('return=representation');
+    request.requestBody(orderPayload);
 
     let paypalOrder;
     try {
       console.log('Creating PayPal order for amount:', totalAmount);
-      console.log('PayPal request body:', JSON.stringify(request.requestBody(), null, 2));
+      console.log('PayPal SDK version info:', {
+        hasOrdersCreateRequest: !!paypal.orders?.OrdersCreateRequest,
+        hasCore: !!paypal.core,
+        requestMethods: Object.getOwnPropertyNames(request)
+      });
       
       const response = await client.execute(request);
       paypalOrder = response.result;
-      console.log('PayPal order created:', paypalOrder.id);
+      console.log('PayPal order created successfully:', paypalOrder.id);
     } catch (paypalError) {
       console.log('PayPal error details:', {
         message: paypalError.message,
         statusCode: paypalError.statusCode,
         details: paypalError.details,
         stack: paypalError.stack,
-        // Debug info
-        environment_type: process.env.NODE_ENV === 'production' ? 'Live' : 'Sandbox',
-        client_id_used: process.env.PAYPAL_CLIENT_ID?.substring(0, 10) + '...',
-        client_secret_used: process.env.PAYPAL_CLIENT_SECRET // Full secret for debugging
+        // Complete environment debug
+        all_env_vars: {
+          NODE_ENV: process.env.NODE_ENV,
+          PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID,
+          PAYPAL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET,
+          PAYPAL_WEBHOOK_ID: process.env.PAYPAL_WEBHOOK_ID,
+          APP_SCHEME: process.env.APP_SCHEME,
+          VERCEL_ENV: process.env.VERCEL_ENV,
+          environment_type: process.env.NODE_ENV === 'production' ? 'Live' : 'Sandbox'
+        }
       });
       
       // Cleanup on PayPal error
@@ -312,10 +340,16 @@ export default async function handler(req, res) {
       error: error.message,
       // Add debug info to response for troubleshooting
       debug: {
-        paypal_credentials_check: {
-          client_id_length: process.env.PAYPAL_CLIENT_ID?.length || 0,
-          client_secret_length: process.env.PAYPAL_CLIENT_SECRET?.length || 0,
-          node_env: process.env.NODE_ENV
+        all_environment_variables: {
+          NODE_ENV: process.env.NODE_ENV,
+          PAYPAL_CLIENT_ID: process.env.PAYPAL_CLIENT_ID,
+          PAYPAL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET,
+          PAYPAL_WEBHOOK_ID: process.env.PAYPAL_WEBHOOK_ID,
+          APP_SCHEME: process.env.APP_SCHEME,
+          SUPABASE_URL: process.env.SUPABASE_URL,
+          VERCEL: process.env.VERCEL,
+          VERCEL_ENV: process.env.VERCEL_ENV,
+          VERCEL_URL: process.env.VERCEL_URL
         }
       }
     });
