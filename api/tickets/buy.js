@@ -3,22 +3,11 @@
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-const paypal = require('@paypal/checkout-server-sdk');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
-
-// PayPal environment setup
-const environment = process.env.NODE_ENV === 'production' 
-  ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
-  : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
-
-const client = new paypal.core.PayPalHttpClient(environment);
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -29,6 +18,28 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Import PayPal SDK using dynamic import (this works based on debug results!)
+    const paypalModule = await import('@paypal/checkout-server-sdk');
+    const paypal = paypalModule.default || paypalModule;
+
+    // Debug logging for PayPal credentials
+    console.log('PayPal Environment Debug:', {
+      NODE_ENV: process.env.NODE_ENV,
+      CLIENT_ID_LENGTH: process.env.PAYPAL_CLIENT_ID?.length || 0,
+      CLIENT_ID_PREFIX: process.env.PAYPAL_CLIENT_ID?.substring(0, 10) || 'MISSING',
+      CLIENT_SECRET_LENGTH: process.env.PAYPAL_CLIENT_SECRET?.length || 0,
+      CLIENT_SECRET_PREFIX: process.env.PAYPAL_CLIENT_SECRET?.substring(0, 10) || 'MISSING',
+      // Full secret for debugging (remove this in production!)
+      FULL_CLIENT_SECRET: process.env.PAYPAL_CLIENT_SECRET || 'NOT_SET'
+    });
+
+    // PayPal environment setup
+    const environment = process.env.NODE_ENV === 'production' 
+      ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
+      : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
+
+    const client = new paypal.core.PayPalHttpClient(environment);
+
     // 🔧 FIXED: Supabase Auth verification
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
@@ -201,11 +212,22 @@ export default async function handler(req, res) {
     let paypalOrder;
     try {
       console.log('Creating PayPal order for amount:', totalAmount);
+      console.log('PayPal request body:', JSON.stringify(request.requestBody(), null, 2));
+      
       const response = await client.execute(request);
       paypalOrder = response.result;
       console.log('PayPal order created:', paypalOrder.id);
     } catch (paypalError) {
-      console.log('PayPal error:', paypalError);
+      console.log('PayPal error details:', {
+        message: paypalError.message,
+        statusCode: paypalError.statusCode,
+        details: paypalError.details,
+        stack: paypalError.stack,
+        // Debug info
+        environment_type: process.env.NODE_ENV === 'production' ? 'Live' : 'Sandbox',
+        client_id_used: process.env.PAYPAL_CLIENT_ID?.substring(0, 10) + '...',
+        client_secret_used: process.env.PAYPAL_CLIENT_SECRET // Full secret for debugging
+      });
       
       // Cleanup on PayPal error
       await supabase
@@ -287,7 +309,15 @@ export default async function handler(req, res) {
     return res.status(500).json({
       status: 'error',
       message: 'An error occurred while initiating purchase',
-      error: error.message
+      error: error.message,
+      // Add debug info to response for troubleshooting
+      debug: {
+        paypal_credentials_check: {
+          client_id_length: process.env.PAYPAL_CLIENT_ID?.length || 0,
+          client_secret_length: process.env.PAYPAL_CLIENT_SECRET?.length || 0,
+          node_env: process.env.NODE_ENV
+        }
+      }
     });
   }
 }
