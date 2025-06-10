@@ -18,6 +18,35 @@ const environment = process.env.NODE_ENV === 'production'
 
 const client = new paypal.core.PayPalHttpClient(environment);
 
+// Blockchain integration
+const { ethers } = require('ethers');
+
+// Blockchain configuration
+const BLOCKCHAIN_CONFIG = {
+  rpcUrl: process.env.ETHEREUM_RPC_URL || 'https://sepolia.infura.io/v3/' + process.env.INFURA_PROJECT_ID,
+  contractAddress: process.env.REVOCATION_CONTRACT_ADDRESS || '0x86d22947cE0D2908eC0CAC78f7EC405f15cB9e50',
+  privateKey: process.env.ADMIN_PRIVATE_KEY,
+  network: 'sepolia'
+};
+
+// Contract ABI for ticket registration
+const CONTRACT_ABI = [
+  "function registerTicket(uint256 tokenId) external",
+  "function batchRegisterTickets(uint256[] calldata tokenIds) external", 
+  "function getTicketStatus(uint256 tokenId) external view returns (uint8)",
+  "function owner() external view returns (address)"
+];
+
+// Initialize blockchain provider and contract
+let blockchainProvider, contract;
+try {
+  blockchainProvider = new ethers.providers.JsonRpcProvider(BLOCKCHAIN_CONFIG.rpcUrl);
+  const wallet = new ethers.Wallet(BLOCKCHAIN_CONFIG.privateKey, blockchainProvider);
+  contract = new ethers.Contract(BLOCKCHAIN_CONFIG.contractAddress, CONTRACT_ABI, wallet);
+} catch (error) {
+  console.error('Blockchain initialization failed:', error.message);
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
     return res.status(405).json({
@@ -114,6 +143,8 @@ export default async function handler(req, res) {
 // Manual payment processing function
 async function processPaymentManually(payment, paypalTransactionId) {
   try {
+    console.log(`🎫 Processing payment: ${payment.payment_id}`);
+    
     // Get event details to create tickets
     const { data: event, error: eventError } = await supabase
       .from('events')
@@ -122,13 +153,14 @@ async function processPaymentManually(payment, paypalTransactionId) {
       .single();
 
     if (eventError) {
-      throw new Error('Event not found');
+      throw new Error('Event not found for payment: ' + payment.event_id);
     }
 
     // Calculate quantity based on payment amount
     const quantity = Math.round(parseFloat(payment.amount) / parseFloat(event.ticket_price));
+    console.log(`📊 Creating ${quantity} tickets for event: ${event.event_name}`);
 
-    // Update payment status
+    // Update payment status first
     const { error: updateError } = await supabase
       .from('payments')
       .update({
@@ -139,19 +171,22 @@ async function processPaymentManually(payment, paypalTransactionId) {
       .eq('payment_id', payment.payment_id);
 
     if (updateError) {
-      throw new Error('Failed to update payment status');
+      throw new Error('Failed to update payment status: ' + updateError.message);
     }
 
-    // Create tickets
+    // Create tickets with blockchain token IDs
     const tickets = [];
+    const tokenIds = []; // For blockchain registration
+    
     for (let i = 1; i <= quantity; i++) {
       const ticketId = crypto.randomUUID();
-      const blockchainTicketId = `TOKEN-${Date.now()}-${i}`;
+      const tokenId = generateTokenId(ticketId); // Convert UUID to uint256
+      const blockchainTicketId = `TOKEN-${tokenId}`;
       const qrCodeHash = crypto.createHash('sha256')
         .update(`${ticketId}-${payment.payment_id}-${Date.now()}`)
         .digest('hex');
 
-      tickets.push({
+      const ticket = {
         ticket_id: ticketId,
         user_id: payment.user_id,
         event_id: event.event_id,
@@ -165,9 +200,9 @@ async function processPaymentManually(payment, paypalTransactionId) {
         is_parent_ticket: i === 1,
         parent_ticket_id: i === 1 ? null : tickets[0]?.ticket_id || null,
         // NFT dummy data
-        nft_contract_address: '0xC952865c8Caa9b06515A15AD9913F0eD75652A03',
-        nft_token_id: generateTokenId(ticketId),
-        nft_mint_status: 'minted',
+        nft_contract_address: BLOCKCHAIN_CONFIG.contractAddress,
+        nft_token_id: tokenId,
+        nft_mint_status: 'pending', // Will update after blockchain registration
         nft_metadata: {
           name: `${event.event_name} Ticket #${i}`,
           description: `Ticket for ${event.event_name} at ${event.venue}`,
@@ -176,34 +211,147 @@ async function processPaymentManually(payment, paypalTransactionId) {
             { trait_type: 'Event', value: event.event_name },
             { trait_type: 'Venue', value: event.venue },
             { trait_type: 'Ticket Number', value: i },
-            { trait_type: 'Total in Group', value: quantity }
+            { trait_type: 'Total in Group', value: quantity },
+            { trait_type: 'Network', value: BLOCKCHAIN_CONFIG.network }
           ]
         }
-      });
+      };
+
+      tickets.push(ticket);
+      tokenIds.push(tokenId);
     }
 
-    // Insert tickets
+    // Insert tickets into database
+    console.log('💾 Inserting tickets into database...');
     const { error: ticketsError } = await supabase
       .from('tickets')
       .insert(tickets);
 
     if (ticketsError) {
-      throw new Error('Failed to create tickets');
+      throw new Error('Failed to create tickets: ' + ticketsError.message);
     }
 
-    console.log(`Successfully created ${quantity} tickets for payment ${payment.payment_id}`);
+    // 🆕 Register tickets in blockchain
+    console.log('🔗 Registering tickets in blockchain...');
+    const blockchainResult = await registerTicketsInBlockchain(tokenIds, tickets);
+
+    if (blockchainResult.success) {
+      // Update tickets as blockchain-registered
+      await supabase
+        .from('tickets')
+        .update({ 
+          nft_mint_status: 'minted',
+          blockchain_registered: true,
+          blockchain_tx_hash: blockchainResult.transactionHash
+        })
+        .in('ticket_id', tickets.map(t => t.ticket_id));
+        
+      console.log(`✅ Successfully registered ${quantity} tickets in blockchain`);
+    } else {
+      console.error('❌ Blockchain registration failed:', blockchainResult.error);
+      
+      // Update tickets with failed status but keep them valid in database
+      await supabase
+        .from('tickets')
+        .update({ 
+          nft_mint_status: 'failed',
+          blockchain_registered: false,
+          blockchain_error: blockchainResult.error
+        })
+        .in('ticket_id', tickets.map(t => t.ticket_id));
+    }
+
+    console.log(`🎉 Payment processing complete for ${payment.payment_id}`);
 
   } catch (error) {
-    console.error('Manual payment processing failed:', error);
+    console.error('❌ Manual payment processing failed:', error);
     throw error;
   }
 }
 
-// Generate token ID for NFT mapping
+// Register tickets in blockchain
+async function registerTicketsInBlockchain(tokenIds, tickets) {
+  try {
+    if (!contract || !blockchainProvider) {
+      throw new Error('Blockchain not initialized');
+    }
+
+    console.log(`🔗 Registering ${tokenIds.length} tickets in blockchain...`);
+    
+    // Check if we have gas
+    const wallet = contract.signer;
+    const balance = await wallet.getBalance();
+    console.log(`💰 Wallet balance: ${ethers.utils.formatEther(balance)} ETH`);
+
+    if (balance.lt(ethers.utils.parseEther('0.001'))) {
+      throw new Error('Insufficient gas for blockchain transaction');
+    }
+
+    // Use batch registration for efficiency
+    let transaction;
+    if (tokenIds.length === 1) {
+      console.log(`📝 Registering single ticket: ${tokenIds[0]}`);
+      transaction = await contract.registerTicket(tokenIds[0]);
+    } else {
+      console.log(`📝 Batch registering ${tokenIds.length} tickets`);
+      transaction = await contract.batchRegisterTickets(tokenIds);
+    }
+
+    console.log(`⏳ Transaction sent: ${transaction.hash}`);
+    
+    // Wait for confirmation with timeout
+    const receipt = await Promise.race([
+      transaction.wait(2), // Wait for 2 confirmations
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Transaction timeout')), 120000) // 2 minute timeout
+      )
+    ]);
+
+    console.log(`✅ Transaction confirmed! Gas used: ${receipt.gasUsed.toString()}`);
+
+    // Verify registration for first ticket
+    const firstTokenStatus = await contract.getTicketStatus(tokenIds[0]);
+    if (firstTokenStatus.toString() !== '1') {
+      throw new Error('Ticket registration verification failed');
+    }
+
+    return {
+      success: true,
+      transactionHash: transaction.hash,
+      gasUsed: receipt.gasUsed.toString(),
+      blockNumber: receipt.blockNumber
+    };
+
+  } catch (error) {
+    console.error('🔥 Blockchain registration error:', error.message);
+    
+    return {
+      success: false,
+      error: error.message,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+// Generate token ID for blockchain (convert UUID to uint256)
 function generateTokenId(ticketUuid) {
-  const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
-  // Take first 15 characters and convert to bigint (to avoid overflow)
-  return BigInt('0x' + hash.substring(0, 15)).toString();
+  try {
+    // Create deterministic hash from UUID
+    const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
+    
+    // Take first 32 characters (64 hex chars = 32 bytes = 256 bits)
+    // But reduce to 31 characters to avoid overflow in uint256
+    const truncatedHash = hash.substring(0, 62); // 31 bytes = 248 bits
+    
+    // Convert to BigInt then to string
+    const tokenId = BigInt('0x' + truncatedHash);
+    
+    return tokenId.toString();
+  } catch (error) {
+    console.error('Token ID generation failed:', error);
+    // Fallback: use timestamp + random
+    return (Date.now() * 1000 + Math.floor(Math.random() * 1000)).toString();
+  }
 }
 
 // Verify PayPal webhook signature
@@ -264,5 +412,15 @@ async function sendPaymentSuccessNotification(userId, paymentId) {
 
   } catch (error) {
     console.error('Failed to send push notification:', error);
+  }
+}
+
+// Add database field for blockchain tracking
+async function addBlockchainFieldsToTickets() {
+  try {
+    // This would be run as a migration
+    await supabase.rpc('add_blockchain_fields_if_not_exists');
+  } catch (error) {
+    console.log('Blockchain fields might already exist:', error.message);
   }
 }
