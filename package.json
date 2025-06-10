@@ -9,7 +9,10 @@
     "deploy:prod": "vercel deploy --prod"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.49.4"
+    "@supabase/supabase-js": "^2.49.4",
+    "jsonwebtoken": "^9.0.2",
+    "@paypal/checkout-server-sdk": "^1.0.3",
+    "ethers": "^5.7.2"
   },
   "devDependencies": {
     "vercel": "^32.0.0"
