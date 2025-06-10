@@ -2,7 +2,6 @@
 // Payment verification endpoint for mobile app after PayPal return
 
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -18,7 +17,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Get user from token
+    // Get user from Supabase Auth token (same as buy.js)
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
       return res.status(401).json({
@@ -27,17 +26,34 @@ export default async function handler(req, res) {
       });
     }
 
-    // Verify JWT token
-    let userId;
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      userId = decoded.sub || decoded.user_id;
-    } catch (error) {
+    // ✅ FIXED: Use Supabase Auth instead of JWT
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
+      console.log('Supabase auth error:', authError?.message);
       return res.status(401).json({
         status: 'error',
         message: 'Invalid or expired token'
       });
     }
+
+    const authUserId = user.id;
+
+    // Get user profile to get internal user_id
+    const { data: userProfile, error: profileError } = await supabase
+      .from('users')
+      .select('user_id, auth_id, verification_status')
+      .eq('auth_id', authUserId)
+      .single();
+
+    if (profileError || !userProfile) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User profile not found'
+      });
+    }
+
+    const userId = userProfile.user_id;
 
     // Extract query parameters
     const { payment_id, paypal_order_id } = req.query;
@@ -60,7 +76,7 @@ export default async function handler(req, res) {
     if (paymentError || !payment) {
       return res.status(404).json({
         status: 'error',
-        message: 'Payment not found'
+        message: 'Payment not found or access denied'
       });
     }
 
@@ -80,7 +96,7 @@ export default async function handler(req, res) {
       currency: 'USD',
       created_at: payment.created_at,
       paypal_order_id: payment.paypal_order_id,
-      paypal_transaction_id: payment.paypal_transaction_id
+      paypal_transaction_id: payment.paypal_transaction_id || null
     };
 
     if (payment.payment_status === 'confirmed') {
@@ -94,11 +110,12 @@ export default async function handler(req, res) {
           blockchain_ticket_id,
           ticket_status,
           nft_token_id,
-          events (
+          nft_mint_status,
+          blockchain_registered,
+          events!inner (
             event_name,
             event_date,
-            venue,
-            event_image_url
+            venue
           )
         `)
         .eq('payment_id', payment_id)
@@ -106,6 +123,10 @@ export default async function handler(req, res) {
 
       if (ticketsError) {
         console.error('Error fetching tickets:', ticketsError);
+        return res.status(500).json({
+          status: 'error',
+          message: 'Failed to retrieve tickets'
+        });
       }
 
       // Generate QR codes (base64) for mobile app
@@ -117,7 +138,9 @@ export default async function handler(req, res) {
         qr_data: ticket.qr_code_hash,
         blockchain_ticket_id: ticket.blockchain_ticket_id,
         nft_token_id: ticket.nft_token_id,
-        download_url: `${process.env.API_BASE_URL}/tickets/download/${ticket.ticket_id}`,
+        nft_status: ticket.nft_mint_status || 'pending',
+        blockchain_registered: ticket.blockchain_registered || false,
+        download_url: `${req.headers.origin || process.env.API_BASE_URL || ''}/api/tickets/download/${ticket.ticket_id}`,
         event: ticket.events
       }));
 
@@ -129,7 +152,12 @@ export default async function handler(req, res) {
         event_info: ticketsWithQR.length > 0 ? ticketsWithQR[0].event : null,
         receipt: {
           receipt_id: payment.payment_id,
-          download_url: `${process.env.API_BASE_URL}/receipts/${payment.payment_id}.pdf`
+          download_url: `${req.headers.origin || process.env.API_BASE_URL || ''}/api/receipts/${payment.payment_id}.pdf`
+        },
+        blockchain_info: {
+          total_tickets: ticketsWithQR.length,
+          registered_on_blockchain: ticketsWithQR.filter(t => t.blockchain_registered).length,
+          pending_registration: ticketsWithQR.filter(t => !t.blockchain_registered).length
         },
         push_notification: {
           title: '🎫 Tickets Ready!',
@@ -148,7 +176,12 @@ export default async function handler(req, res) {
         tickets_ready: false,
         message: 'Payment is still being processed',
         estimated_completion: new Date(Date.now() + 5 * 60 * 1000).toISOString(), // 5 minutes
-        retry_after: 30 // seconds
+        retry_after: 30, // seconds
+        instructions: [
+          'Your payment is being processed by PayPal',
+          'Tickets will be generated automatically once confirmed',
+          'You will receive a notification when ready'
+        ]
       };
 
     } else if (payment.payment_status === 'failed') {
@@ -158,12 +191,13 @@ export default async function handler(req, res) {
       responseData = {
         ...responseData,
         tickets_ready: false,
-        message: 'Payment failed',
-        error_details: 'Payment could not be processed',
+        message: 'Payment failed or was canceled',
+        error_details: 'Payment could not be processed by PayPal',
         next_steps: [
-          'Try purchasing again',
-          'Check your PayPal account',
-          'Contact support if issue persists'
+          'Try purchasing tickets again',
+          'Check your PayPal account for any issues',
+          'Ensure sufficient funds are available',
+          'Contact support if the issue persists'
         ]
       };
     }
@@ -186,19 +220,24 @@ export default async function handler(req, res) {
 
 // Generate QR code as base64 for mobile app
 function generateQRCode(qrData) {
-  // This is a placeholder - you'll need to implement actual QR code generation
-  // Using a library like 'qrcode' npm package
-  
-  // For now, return a data URL placeholder
-  // In production, use: const QRCode = require('qrcode');
+  // This is a placeholder - in production, install 'qrcode' package:
+  // npm install qrcode
+  // const QRCode = require('qrcode');
   // return await QRCode.toDataURL(qrData);
   
-  return `data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==`;
+  // For now, return a placeholder that mobile apps can detect
+  const placeholder = Buffer.from(`QR:${qrData}`).toString('base64');
+  return `data:image/png;base64,${placeholder}`;
 }
 
 // Restore ticket availability if payment failed
 async function restoreTicketAvailability(payment) {
   try {
+    if (!payment.event_id) {
+      console.log('No event_id found for payment, skipping ticket restoration');
+      return;
+    }
+
     // Calculate quantity from payment amount and event price
     const { data: event } = await supabase
       .from('events')
@@ -210,14 +249,18 @@ async function restoreTicketAvailability(payment) {
       const quantity = Math.round(parseFloat(payment.amount) / parseFloat(event.ticket_price));
       
       // Restore availability
-      await supabase
+      const { error: updateError } = await supabase
         .from('events')
         .update({
           available_tickets: event.available_tickets + quantity
         })
         .eq('event_id', payment.event_id);
 
-      console.log(`Restored ${quantity} tickets for failed payment ${payment.payment_id}`);
+      if (updateError) {
+        console.error('Failed to update event availability:', updateError);
+      } else {
+        console.log(`✅ Restored ${quantity} tickets for failed payment ${payment.payment_id}`);
+      }
     }
   } catch (error) {
     console.error('Failed to restore ticket availability:', error);
