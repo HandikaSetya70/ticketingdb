@@ -3,21 +3,31 @@
 
 import { createClient } from '@supabase/supabase-js';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// PayPal SDK (you'll need to install: npm install @paypal/checkout-server-sdk)
-const paypal = require('@paypal/checkout-server-sdk');
+// 🔧 FIXED: Use dynamic import for PayPal SDK (CommonJS module)
+let paypal;
+let client;
 
-// PayPal environment setup
-const environment = process.env.NODE_ENV === 'production' 
-  ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
-  : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
+// Initialize PayPal SDK
+async function initializePayPal() {
+  if (!paypal) {
+    paypal = await import('@paypal/checkout-server-sdk');
+    
+    // PayPal environment setup
+    const environment = process.env.NODE_ENV === 'production' 
+      ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
+      : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
 
-const client = new paypal.core.PayPalHttpClient(environment);
+    client = new paypal.core.PayPalHttpClient(environment);
+  }
+  return { paypal, client };
+}
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -28,6 +38,9 @@ export default async function handler(req, res) {
   }
 
   try {
+    // 🔧 FIXED: Initialize PayPal first
+    const { paypal, client } = await initializePayPal();
+
     // Get user from token
     const token = req.headers.authorization?.replace('Bearer ', '');
     if (!token) {
@@ -37,7 +50,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // Verify JWT token (assuming you use JWT)
+    // 🔧 FIXED: Re-enabled JWT verification
     let userId;
     try {
       const decoded = jwt.verify(token, process.env.JWT_SECRET);
