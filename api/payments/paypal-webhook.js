@@ -184,8 +184,8 @@ async function processPaymentManually(payment, paypalTransactionId) {
       .from('payments')
       .update({
         payment_status: 'confirmed',
-        paypal_transaction_id: paypalTransactionId,
-        updated_at: new Date().toISOString()
+        paypal_transaction_id: paypalTransactionId
+        // Removed updated_at since column doesn't exist
       })
       .eq('payment_id', payment.payment_id);
 
@@ -366,9 +366,9 @@ function generateTokenId(ticketUuid) {
     // Create deterministic hash from UUID
     const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
     
-    // Take first 32 characters (64 hex chars = 32 bytes = 256 bits)
-    // But reduce to 31 characters to avoid overflow in uint256
-    const truncatedHash = hash.substring(0, 62); // 31 bytes = 248 bits
+    // For PostgreSQL bigint compatibility, use only first 15 hex characters (60 bits)
+    // This ensures we stay well under the bigint limit (2^63 - 1)
+    const truncatedHash = hash.substring(0, 15); // 15 hex chars = 60 bits
     
     // Convert to BigInt then to string
     const tokenId = BigInt('0x' + truncatedHash);
@@ -376,8 +376,10 @@ function generateTokenId(ticketUuid) {
     return tokenId.toString();
   } catch (error) {
     console.error('Token ID generation failed:', error);
-    // Fallback: use timestamp + random
-    return (Date.now() * 1000 + Math.floor(Math.random() * 1000)).toString();
+    // Fallback: use timestamp + random (ensure it's under bigint limit)
+    const timestamp = Date.now(); // ~50 bits
+    const random = Math.floor(Math.random() * 1000); // 10 bits
+    return (timestamp * 1000 + random).toString();
   }
 }
 
