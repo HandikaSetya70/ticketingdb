@@ -47,11 +47,14 @@ export default async function handler(req, res) {
       VERCEL_URL: process.env.VERCEL_URL || 'NOT_SET'
     });
 
-    // PayPal environment setup
-    // Better approach using dedicated PayPal mode variable
-    const environment = process.env.PAYPAL_MODE === 'live'
-      ? new paypal.core.LiveEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET)
-      : new paypal.core.SandboxEnvironment(process.env.PAYPAL_CLIENT_ID, process.env.PAYPAL_CLIENT_SECRET);
+    // Force Sandbox environment for testing (regardless of NODE_ENV)
+    // TODO: Change this to production logic when you have Live credentials
+    const environment = new paypal.core.SandboxEnvironment(
+      process.env.PAYPAL_CLIENT_ID, 
+      process.env.PAYPAL_CLIENT_SECRET
+    );
+    
+    console.log('Using PayPal Sandbox Environment for testing');
 
     const client = new paypal.core.PayPalHttpClient(environment);
 
@@ -167,6 +170,7 @@ export default async function handler(req, res) {
       .insert({
         payment_id: paymentId,
         user_id: userProfile.user_id, // Use your internal user_id
+        event_id: event_id, // ← ADD THIS LINE!
         amount: totalAmount,
         payment_status: 'pending',
         payment_method: 'paypal',

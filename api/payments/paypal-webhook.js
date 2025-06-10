@@ -131,14 +131,48 @@ async function processPaymentManually(payment, paypalTransactionId) {
     console.log(`🎫 Processing payment: ${payment.payment_id}`);
     
     // Get event details to create tickets
-    const { data: event, error: eventError } = await supabase
-      .from('events')
-      .select('*')
-      .eq('event_id', payment.event_id)
-      .single();
-
-    if (eventError) {
-      throw new Error('Event not found for payment: ' + payment.event_id);
+    let event;
+    
+    if (payment.event_id) {
+      // Normal case: event_id exists in payment
+      const { data: eventData, error: eventError } = await supabase
+        .from('events')
+        .select('*')
+        .eq('event_id', payment.event_id)
+        .single();
+        
+      if (eventError) {
+        throw new Error('Event not found for payment: ' + payment.event_id);
+      }
+      event = eventData;
+      
+    } else {
+      // Fallback: try to find event by matching payment amount with ticket price
+      console.log('⚠️ No event_id in payment, attempting to find by amount');
+      
+      const { data: events, error: eventsError } = await supabase
+        .from('events')
+        .select('*')
+        .gte('event_date', new Date().toISOString()) // Only future events
+        .order('created_at', { ascending: false });
+        
+      if (eventsError || !events.length) {
+        throw new Error('No events found to match payment amount');
+      }
+      
+      // Find event where payment amount is divisible by ticket price
+      const paymentAmount = parseFloat(payment.amount);
+      event = events.find(e => {
+        const ticketPrice = parseFloat(e.ticket_price);
+        const quantity = paymentAmount / ticketPrice;
+        return Number.isInteger(quantity) && quantity > 0 && quantity <= 10;
+      });
+      
+      if (!event) {
+        throw new Error(`No event found with ticket price that matches payment amount: ${paymentAmount}`);
+      }
+      
+      console.log(`📍 Found matching event: ${event.event_name} (price: ${event.ticket_price})`);
     }
 
     // Calculate quantity based on payment amount
