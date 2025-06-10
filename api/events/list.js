@@ -32,7 +32,7 @@ export default async function handler(req, res) {
     } = req.query;
 
     // Build query
-    let query = supabase
+    let       query = supabase
       .from('events')
       .select(`
         event_id,
@@ -44,8 +44,7 @@ export default async function handler(req, res) {
         category,
         ticket_price,
         total_tickets,
-        available_tickets,
-        created_at
+        available_tickets
       `);
 
     // Apply filters
@@ -120,8 +119,7 @@ export default async function handler(req, res) {
         sold_percentage: soldPercentage,
         status: salesStatus,
         currency: 'USD',
-        is_sold_out: event.available_tickets === 0,
-        created_at: event.created_at
+        is_sold_out: event.available_tickets === 0
       };
     });
 
