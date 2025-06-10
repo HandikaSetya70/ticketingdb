@@ -3,11 +3,14 @@
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
-import { createRequire } from 'module';
 
-const require = createRequire(import.meta.url);
-const paypal = require('@paypal/checkout-server-sdk');
-
+let paypal;
+try {
+  const module = await import('@paypal/checkout-server-sdk');
+  paypal = module.default || module;
+} catch (error) {
+  console.error('Failed to import PayPal SDK:', error);
+}
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_KEY
