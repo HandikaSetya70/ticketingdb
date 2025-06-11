@@ -1,8 +1,7 @@
 // /api/tickets/user-tickets.js
-// Enhanced user ticket wallet for mobile app
+// Enhanced user ticket wallet for mobile app with Supabase Auth
 
 import { createClient } from '@supabase/supabase-js';
-import jwt from 'jsonwebtoken';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -18,26 +17,28 @@ export default async function handler(req, res) {
   }
 
   try {
-    // Get user from token
-    const token = req.headers.authorization?.replace('Bearer ', '');
-    if (!token) {
+    // Get Supabase Auth token from Authorization header
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({
         status: 'error',
         message: 'Authentication token required'
       });
     }
 
-    // Verify JWT token
-    let userId;
-    try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-      userId = decoded.sub || decoded.user_id;
-    } catch (error) {
+    const token = authHeader.replace('Bearer ', '');
+
+    // Verify the Supabase Auth token and get user
+    const { data: { user }, error: authError } = await supabase.auth.getUser(token);
+    
+    if (authError || !user) {
       return res.status(401).json({
         status: 'error',
         message: 'Invalid or expired token'
       });
     }
+
+    const userId = user.id;
 
     // Extract query parameters
     const {
@@ -48,8 +49,21 @@ export default async function handler(req, res) {
       upcoming_only = 'false'
     } = req.query;
 
-    // Base query for tickets
-    let query = supabase
+    // Base query for tickets using RLS (Row Level Security)
+    // Create a client with the user's token for RLS
+    const userSupabase = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_ANON_KEY, // Use anon key for RLS
+      {
+        global: {
+          headers: {
+            Authorization: `Bearer ${token}`
+          }
+        }
+      }
+    );
+
+    let query = userSupabase
       .from('tickets')
       .select(`
         ticket_id,
@@ -98,6 +112,7 @@ export default async function handler(req, res) {
     const { data: tickets, error } = await query;
 
     if (error) {
+      console.error('Database error:', error);
       throw error;
     }
 
@@ -145,10 +160,10 @@ export default async function handler(req, res) {
           nft_token_id: ticket.nft_token_id
         },
         purchase_info: {
-          payment_id: payment.payment_id,
-          amount_paid: parseFloat(payment.amount || 0),
+          payment_id: payment?.payment_id,
+          amount_paid: parseFloat(payment?.amount || 0),
           purchase_date: ticket.purchase_date,
-          payment_status: payment.payment_status
+          payment_status: payment?.payment_status
         },
         qr_code: include_qr === 'true' ? generateQRCode(ticket.qr_code_hash) : null,
         qr_data: ticket.qr_code_hash,
@@ -166,6 +181,11 @@ export default async function handler(req, res) {
           can_refund: ticket.ticket_status === 'valid' && daysTillEvent > 7,
           can_download: true,
           can_share: true
+        },
+        user_metadata: {
+          user_id: user.id,
+          user_email: user.email,
+          user_name: user.user_metadata?.full_name || user.email
         }
       };
     });
@@ -207,6 +227,11 @@ export default async function handler(req, res) {
           total_tickets: processedTickets.length,
           grouped_tickets: groupedTickets,
           summary: calculateOverallSummary(processedTickets),
+          user_info: {
+            id: user.id,
+            email: user.email,
+            name: user.user_metadata?.full_name || user.email
+          },
           last_sync: new Date().toISOString(),
           filters_applied: {
             status: status || null,
@@ -233,6 +258,12 @@ export default async function handler(req, res) {
         ticket_groups: ticketGroups.groups,
         standalone_tickets: ticketGroups.standalone,
         summary: calculateOverallSummary(processedTickets),
+        user_info: {
+          id: user.id,
+          email: user.email,
+          name: user.user_metadata?.full_name || user.email,
+          auth_provider: user.app_metadata?.provider
+        },
         last_sync: new Date().toISOString(),
         next_sync_recommended: new Date(Date.now() + 5 * 60 * 1000).toISOString(), // 5 minutes
         filters_applied: {
@@ -249,7 +280,7 @@ export default async function handler(req, res) {
     return res.status(500).json({
       status: 'error',
       message: 'An error occurred while retrieving tickets',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
 }
