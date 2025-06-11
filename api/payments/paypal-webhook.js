@@ -71,7 +71,7 @@ export default async function handler(req, res) {
     console.log('📝 Event type:', event_type);
 
     // Only handle successful payment captures
-    if (event_type !== 'PAYMENT.CAPTURE.COMPLETED' && event_type !== 'CHECKOUT.ORDER.APPROVED') {
+    if (event_type !== 'PAYMENT.CAPTURE.COMPLETED') {
       console.log('⏭️ Skipping event type:', event_type, '- Only handling PAYMENT.CAPTURE.COMPLETED');
       return res.status(200).json({
         status: 'success',
@@ -79,12 +79,6 @@ export default async function handler(req, res) {
       });
     }
 
-    if (event_type === 'CHECKOUT.ORDER.APPROVED') {
-      // Capture the approved payment via PayPal API
-      const captureResult = await capturePayPalOrder(paypalOrderId);
-      // This will trigger PAYMENT.CAPTURE.COMPLETED webhook
-    }
-        
     console.log('🎯 ============ PAYMENT PROCESSING STARTED ============');
     const paypalOrderId = resource.supplementary_data?.related_ids?.order_id;
     const paypalTransactionId = resource.id;
@@ -568,6 +562,50 @@ async function verifyPayPalWebhook(req) {
   } catch (error) {
     console.error('❌ Webhook verification failed:', error);
     return false;
+  }
+}
+
+// Capture PayPal order function
+async function capturePayPalOrder(paypal, environment, orderId) {
+  try {
+    console.log('🔄 ============ CAPTURING PAYPAL ORDER ============');
+    console.log('   📋 Order ID to capture:', orderId);
+    
+    const client = new paypal.core.PayPalHttpClient(environment);
+    const request = new paypal.orders.OrdersCaptureRequest(orderId);
+    request.requestBody({});
+    
+    const response = await client.execute(request);
+    const captureResponse = response.result;
+    
+    console.log('✅ PayPal capture response received');
+    console.log('   📊 Status:', captureResponse.status);
+    console.log('   🆔 Order ID:', captureResponse.id);
+    
+    if (captureResponse.status === 'COMPLETED') {
+      const captureId = captureResponse.purchase_units[0].payments.captures[0].id;
+      console.log('✅ Payment captured successfully');
+      console.log('   🆔 Capture ID:', captureId);
+      
+      return {
+        success: true,
+        captureId: captureId,
+        orderId: captureResponse.id
+      };
+    } else {
+      console.error('❌ Payment capture failed with status:', captureResponse.status);
+      return {
+        success: false,
+        error: `Capture failed with status: ${captureResponse.status}`
+      };
+    }
+    
+  } catch (error) {
+    console.error('❌ PayPal capture error:', error.message);
+    return {
+      success: false,
+      error: error.message
+    };
   }
 }
 
