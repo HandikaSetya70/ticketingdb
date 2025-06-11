@@ -71,7 +71,7 @@ export default async function handler(req, res) {
     console.log('📝 Event type:', event_type);
 
     // Only handle successful payment captures
-    if (event_type !== 'PAYMENT.CAPTURE.COMPLETED') {
+    if (event_type !== 'PAYMENT.CAPTURE.COMPLETED' && event_type !== 'CHECKOUT.ORDER.APPROVED') {
       console.log('⏭️ Skipping event type:', event_type, '- Only handling PAYMENT.CAPTURE.COMPLETED');
       return res.status(200).json({
         status: 'success',
@@ -79,6 +79,12 @@ export default async function handler(req, res) {
       });
     }
 
+    if (event_type === 'CHECKOUT.ORDER.APPROVED') {
+      // Capture the approved payment via PayPal API
+      const captureResult = await capturePayPalOrder(paypalOrderId);
+      // This will trigger PAYMENT.CAPTURE.COMPLETED webhook
+    }
+        
     console.log('🎯 ============ PAYMENT PROCESSING STARTED ============');
     const paypalOrderId = resource.supplementary_data?.related_ids?.order_id;
     const paypalTransactionId = resource.id;
