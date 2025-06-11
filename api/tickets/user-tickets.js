@@ -379,10 +379,17 @@ function calculateOverallSummary(tickets) {
 }
 
 // Generate QR code as base64 (placeholder implementation)
-function generateQRCode(qrData) {
-  // Placeholder - implement with actual QR code library
-  // const QRCode = require('qrcode');
-  // return await QRCode.toDataURL(qrData);
+function generateQRCode(ticket) {
+  if (ticket.qr_code_base64) {
+    return ticket.qr_code_base64; // Already generated QR
+  }
   
-  return `data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==`;
+  // Fallback: generate on-demand
+  const qrData = {
+    ticket_id: ticket.ticket_id,
+    blockchain_token_id: ticket.nft_token_id,
+    validation_hash: ticket.qr_code_hash
+  };
+  
+  return QRCode.toDataURL(JSON.stringify(qrData));
 }

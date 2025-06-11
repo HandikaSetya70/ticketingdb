@@ -3,6 +3,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
+import QRCode from 'qrcode';
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -486,6 +487,17 @@ async function processPaymentManually(payment, paypalTransactionId) {
       const blockchainTicketId = `TOKEN-${tokenId}`;
       console.log('   🏷️ Blockchain Ticket ID:', blockchainTicketId);
       
+      const qrData = {
+        ticket_id: ticketId,
+        blockchain_token_id: tokenId,
+        event_id: event.event_id,
+        validation_hash: crypto.createHash('sha256')
+          .update(`${ticketId}-${tokenId}-${process.env.QR_SECRET}`)
+          .digest('hex'),
+        issued_at: new Date().toISOString()
+      };
+
+      const qrCodeDataURL = await QRCode.toDataURL(JSON.stringify(qrData));
       const qrCodeHash = crypto.createHash('sha256')
         .update(`${ticketId}-${payment.payment_id}-${Date.now()}`)
         .digest('hex');
@@ -499,6 +511,8 @@ async function processPaymentManually(payment, paypalTransactionId) {
         purchase_date: new Date().toISOString(),
         ticket_status: 'valid',
         blockchain_ticket_id: blockchainTicketId,
+        qr_code_data: JSON.stringify(qrData),
+        qr_code_base64: qrCodeDataURL,
         qr_code_hash: qrCodeHash,
         ticket_number: i,
         total_tickets_in_group: quantity,

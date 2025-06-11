@@ -11,9 +11,10 @@
   "dependencies": {
     "@paypal/checkout-server-sdk": "^1.0.3",
     "@supabase/supabase-js": "^2.49.4",
-    "paypal-rest-sdk": "^1.8.1",
     "ethers": "^5.7.2",
-    "jsonwebtoken": "^9.0.2"
+    "jsonwebtoken": "^9.0.2",
+    "paypal-rest-sdk": "^1.8.1",
+    "qrcode": "^1.5.4"
   },
   "devDependencies": {
     "vercel": "^32.0.0"
