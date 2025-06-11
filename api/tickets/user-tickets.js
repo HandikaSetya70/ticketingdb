@@ -38,7 +38,27 @@ export default async function handler(req, res) {
       });
     }
 
-    const userId = user.id;
+    const authUserId = user.id;
+
+    // First, get the internal user_id from your users table using the auth_id
+    const { data: userData, error: userError } = await supabase
+      .from('users')
+      .select('user_id, id_name, verification_status')
+      .eq('auth_id', authUserId)
+      .single();
+
+    if (userError || !userData) {
+      return res.status(404).json({
+        status: 'error',
+        message: 'User profile not found. Please complete your profile setup.',
+        debug: {
+          auth_user_id: authUserId,
+          user_lookup_error: userError?.message
+        }
+      });
+    }
+
+    const internalUserId = userData.user_id;
 
     // Extract query parameters
     const {
@@ -49,21 +69,8 @@ export default async function handler(req, res) {
       upcoming_only = 'false'
     } = req.query;
 
-    // Base query for tickets using RLS (Row Level Security)
-    // Create a client with the user's token for RLS
-    const userSupabase = createClient(
-      process.env.SUPABASE_URL,
-      process.env.SUPABASE_ANON_KEY, // Use anon key for RLS
-      {
-        global: {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        }
-      }
-    );
-
-    let query = userSupabase
+    // Use service key for querying since we're using internal user_id
+    let query = supabase
       .from('tickets')
       .select(`
         ticket_id,
@@ -96,7 +103,7 @@ export default async function handler(req, res) {
           created_at
         )
       `)
-      .eq('user_id', userId)
+      .eq('user_id', internalUserId)
       .order('purchase_date', { ascending: false });
 
     // Apply filters
@@ -183,9 +190,11 @@ export default async function handler(req, res) {
           can_share: true
         },
         user_metadata: {
-          user_id: user.id,
+          auth_user_id: authUserId,
+          internal_user_id: internalUserId,
           user_email: user.email,
-          user_name: user.user_metadata?.full_name || user.email
+          user_name: userData.id_name || user.user_metadata?.full_name || user.email,
+          verification_status: userData.verification_status
         }
       };
     });
@@ -228,9 +237,11 @@ export default async function handler(req, res) {
           grouped_tickets: groupedTickets,
           summary: calculateOverallSummary(processedTickets),
           user_info: {
-            id: user.id,
+            auth_id: authUserId,
+            internal_id: internalUserId,
             email: user.email,
-            name: user.user_metadata?.full_name || user.email
+            name: userData.id_name || user.user_metadata?.full_name || user.email,
+            verification_status: userData.verification_status
           },
           last_sync: new Date().toISOString(),
           filters_applied: {
@@ -248,7 +259,7 @@ export default async function handler(req, res) {
 
     // Set cache headers for mobile
     res.setHeader('Cache-Control', 'private, max-age=60'); // 1 minute cache
-    res.setHeader('ETag', `"tickets-${userId}-${Date.now()}"`);
+    res.setHeader('ETag', `"tickets-${internalUserId}-${Date.now()}"`);
 
     return res.status(200).json({
       status: 'success',
@@ -259,9 +270,11 @@ export default async function handler(req, res) {
         standalone_tickets: ticketGroups.standalone,
         summary: calculateOverallSummary(processedTickets),
         user_info: {
-          id: user.id,
+          auth_id: authUserId,
+          internal_id: internalUserId,
           email: user.email,
-          name: user.user_metadata?.full_name || user.email,
+          name: userData.id_name || user.user_metadata?.full_name || user.email,
+          verification_status: userData.verification_status,
           auth_provider: user.app_metadata?.provider
         },
         last_sync: new Date().toISOString(),
