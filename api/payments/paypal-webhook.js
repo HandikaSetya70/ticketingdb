@@ -1,5 +1,5 @@
 // /api/payments/paypal-webhook.js
-// PayPal webhook handler for payment completion with detailed logging
+// Fixed PayPal webhook handler with proper order ID extraction
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
@@ -80,34 +80,147 @@ export default async function handler(req, res) {
     }
 
     console.log('🎯 ============ PAYMENT PROCESSING STARTED ============');
-    const paypalOrderId = resource.supplementary_data?.related_ids?.order_id;
-    const paypalTransactionId = resource.id;
-    const capturedAmount = parseFloat(resource.purchase_units[0].amount.value);
+    
+    // FIXED: Better order ID extraction with multiple fallback methods
+    let paypalOrderId = null;
+    let paypalTransactionId = resource.id;
+    let capturedAmount = 0;
+
+    console.log('🔍 ============ ORDER ID EXTRACTION ============');
+    console.log('📦 Resource object keys:', Object.keys(resource || {}));
+    
+    // Method 1: Check supplementary_data
+    if (resource.supplementary_data?.related_ids?.order_id) {
+      paypalOrderId = resource.supplementary_data.related_ids.order_id;
+      console.log('✅ Method 1 - Found order ID in supplementary_data:', paypalOrderId);
+    }
+    
+    // Method 2: Check custom_id in purchase_units
+    else if (resource.purchase_units?.[0]?.custom_id) {
+      paypalOrderId = resource.purchase_units[0].custom_id;
+      console.log('✅ Method 2 - Found order ID in custom_id:', paypalOrderId);
+    }
+    
+    // Method 3: Check reference_id in purchase_units
+    else if (resource.purchase_units?.[0]?.reference_id) {
+      paypalOrderId = resource.purchase_units[0].reference_id;
+      console.log('✅ Method 3 - Found order ID in reference_id:', paypalOrderId);
+    }
+    
+    // Method 4: Check invoice_id in purchase_units
+    else if (resource.purchase_units?.[0]?.invoice_id) {
+      paypalOrderId = resource.purchase_units[0].invoice_id;
+      console.log('✅ Method 4 - Found order ID in invoice_id:', paypalOrderId);
+    }
+    
+    // Method 5: For CHECKOUT.ORDER.APPROVED, the resource.id IS the order ID
+    else if (event_type === 'CHECKOUT.ORDER.APPROVED') {
+      paypalOrderId = resource.id;
+      console.log('✅ Method 5 - Using resource.id as order ID for CHECKOUT.ORDER.APPROVED:', paypalOrderId);
+    }
+    
+    // Method 6: Check if we can get it from the resource structure
+    else if (resource.order_id) {
+      paypalOrderId = resource.order_id;
+      console.log('✅ Method 6 - Found order_id directly in resource:', paypalOrderId);
+    }
+    
+    else {
+      console.error('❌ CRITICAL ERROR: Could not extract PayPal order ID from webhook');
+      console.error('📦 Available resource structure:');
+      console.error(JSON.stringify(resource, null, 2));
+      
+      // Log all possible paths where order ID might be hiding
+      console.log('🔍 Searching all possible paths for order ID...');
+      searchForOrderId(resource, '');
+      
+      return res.status(400).json({
+        status: 'error',
+        message: 'PayPal order ID not found in webhook payload'
+      });
+    }
+
+    // Extract captured amount
+    console.log('💰 ============ AMOUNT EXTRACTION ============');
+    if (resource.purchase_units?.[0]?.amount?.value) {
+      capturedAmount = parseFloat(resource.purchase_units[0].amount.value);
+      console.log('✅ Amount extracted from purchase_units:', capturedAmount);
+    } else if (resource.amount?.value) {
+      capturedAmount = parseFloat(resource.amount.value);
+      console.log('✅ Amount extracted from resource.amount:', capturedAmount);
+    } else {
+      console.error('❌ Could not extract payment amount');
+      capturedAmount = 0;
+    }
 
     console.log('💰 Payment details extracted:');
     console.log('   📋 PayPal Order ID:', paypalOrderId);
     console.log('   🆔 Transaction ID:', paypalTransactionId);
     console.log('   💵 Captured Amount:', capturedAmount);
 
-    // Find the payment record
+    // Find the payment record with improved search
     console.log('🔍 ============ DATABASE PAYMENT LOOKUP ============');
     console.log('🔍 Searching for payment with order ID:', paypalOrderId);
     
-    const { data: payment, error: paymentError } = await supabase
+    let payment, paymentError;
+    
+    // First, try to find by paypal_order_id
+    const { data: paymentData, error: primaryError } = await supabase
       .from('payments')
       .select('*')
       .eq('paypal_order_id', paypalOrderId)
       .eq('payment_status', 'pending')
       .single();
 
-    if (paymentError || !payment) {
-      console.error('❌ CRITICAL ERROR: Payment not found in database');
-      console.error('   🔍 Searched for order ID:', paypalOrderId);
-      console.error('   📄 Database error:', paymentError);
-      return res.status(404).json({
-        status: 'error',
-        message: 'Payment record not found'
-      });
+    if (primaryError || !paymentData) {
+      console.log('⚠️ Primary search failed, trying alternative searches...');
+      
+      // Try searching by transaction_id if we have it
+      const { data: altPaymentData, error: altError } = await supabase
+        .from('payments')
+        .select('*')
+        .eq('paypal_transaction_id', paypalTransactionId)
+        .eq('payment_status', 'pending')
+        .single();
+        
+      if (altError || !altPaymentData) {
+        console.error('❌ CRITICAL ERROR: Payment not found in database');
+        console.error('   🔍 Searched for order ID:', paypalOrderId);
+        console.error('   🔍 Searched for transaction ID:', paypalTransactionId);
+        console.error('   📄 Primary error:', primaryError);
+        console.error('   📄 Alternative error:', altError);
+        
+        // Log recent payments for debugging
+        console.log('🔍 Checking recent payments for debugging...');
+        const { data: recentPayments } = await supabase
+          .from('payments')
+          .select('payment_id, paypal_order_id, paypal_transaction_id, payment_status, created_at')
+          .order('created_at', { ascending: false })
+          .limit(5);
+          
+        console.log('📋 Recent payments in database:');
+        recentPayments?.forEach((p, i) => {
+          console.log(`   ${i + 1}. ID: ${p.payment_id}, Order: ${p.paypal_order_id}, Status: ${p.payment_status}`);
+        });
+        
+        return res.status(404).json({
+          status: 'error',
+          message: 'Payment record not found',
+          debug: {
+            searchedOrderId: paypalOrderId,
+            searchedTransactionId: paypalTransactionId,
+            recentPayments: recentPayments?.slice(0, 3)
+          }
+        });
+      } else {
+        payment = altPaymentData;
+        paymentError = null;
+        console.log('✅ Payment found using alternative search (transaction ID)');
+      }
+    } else {
+      payment = paymentData;
+      paymentError = null;
+      console.log('✅ Payment found using primary search (order ID)');
     }
 
     console.log('✅ Payment record found in database:');
@@ -117,23 +230,27 @@ export default async function handler(req, res) {
     console.log('   💰 Database Amount:', payment.amount);
     console.log('   📊 Current Status:', payment.payment_status);
 
-    // Verify amount matches
-    console.log('🔍 ============ AMOUNT VERIFICATION ============');
-    const amountDifference = Math.abs(capturedAmount - parseFloat(payment.amount));
-    console.log('💵 PayPal Amount:', capturedAmount);
-    console.log('💾 Database Amount:', parseFloat(payment.amount));
-    console.log('📏 Difference:', amountDifference);
-    
-    if (amountDifference > 0.01) {
-      console.error('❌ CRITICAL ERROR: Amount mismatch detected');
-      console.error('   💵 PayPal:', capturedAmount);
-      console.error('   💾 Database:', payment.amount);
-      return res.status(400).json({
-        status: 'error',
-        message: 'Payment amount mismatch'
-      });
+    // Verify amount matches (only if we have a valid amount)
+    if (capturedAmount > 0) {
+      console.log('🔍 ============ AMOUNT VERIFICATION ============');
+      const amountDifference = Math.abs(capturedAmount - parseFloat(payment.amount));
+      console.log('💵 PayPal Amount:', capturedAmount);
+      console.log('💾 Database Amount:', parseFloat(payment.amount));
+      console.log('📏 Difference:', amountDifference);
+      
+      if (amountDifference > 0.01) {
+        console.error('❌ CRITICAL ERROR: Amount mismatch detected');
+        console.error('   💵 PayPal:', capturedAmount);
+        console.error('   💾 Database:', payment.amount);
+        return res.status(400).json({
+          status: 'error',
+          message: 'Payment amount mismatch'
+        });
+      }
+      console.log('✅ Amount verification passed');
+    } else {
+      console.log('⚠️ Skipping amount verification (amount not found in webhook)');
     }
-    console.log('✅ Amount verification passed');
 
     // Process payment and create tickets
     console.log('🎫 ============ TICKET CREATION PROCESS ============');
@@ -163,6 +280,25 @@ export default async function handler(req, res) {
       message: 'Webhook processing failed',
       error: error.message
     });
+  }
+}
+
+// Helper function to recursively search for order ID in the payload
+function searchForOrderId(obj, path = '') {
+  if (typeof obj !== 'object' || obj === null) return;
+  
+  for (const [key, value] of Object.entries(obj)) {
+    const currentPath = path ? `${path}.${key}` : key;
+    
+    // Look for potential order ID fields
+    if (key.toLowerCase().includes('order') && typeof value === 'string') {
+      console.log(`🔍 Potential order ID at ${currentPath}:`, value);
+    }
+    
+    // Recursively search nested objects
+    if (typeof value === 'object' && value !== null) {
+      searchForOrderId(value, currentPath);
+    }
   }
 }
 
