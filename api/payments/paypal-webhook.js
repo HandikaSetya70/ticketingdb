@@ -82,7 +82,7 @@ export default async function handler(req, res) {
     console.log('🎯 ============ PAYMENT PROCESSING STARTED ============');
     const paypalOrderId = resource.supplementary_data?.related_ids?.order_id;
     const paypalTransactionId = resource.id;
-    const capturedAmount = parseFloat(resource.amount.value);
+    const capturedAmount = parseFloat(resource.purchase_units[0].amount.value);
 
     console.log('💰 Payment details extracted:');
     console.log('   📋 PayPal Order ID:', paypalOrderId);
