@@ -1,5 +1,5 @@
 // /api/tickets/user-tickets.js
-// Enhanced user ticket wallet for mobile app with Supabase Auth
+// Enhanced user ticket wallet for mobile app with Supabase Auth and FIXED QR CODE
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -81,6 +81,8 @@ export default async function handler(req, res) {
         ticket_status,
         blockchain_ticket_id,
         qr_code_hash,
+        qr_code_base64,
+        qr_code_data,
         ticket_number,
         total_tickets_in_group,
         is_parent_ticket,
@@ -133,7 +135,7 @@ export default async function handler(req, res) {
     }
 
     // Process tickets with QR codes and additional info
-    const processedTickets = filteredTickets.map(ticket => {
+    const processedTickets = await Promise.all(filteredTickets.map(async (ticket) => {
       const event = ticket.events;
       const payment = ticket.payments;
       
@@ -141,6 +143,12 @@ export default async function handler(req, res) {
       const eventDate = new Date(event.event_date);
       const isUpcoming = eventDate > new Date();
       const daysTillEvent = Math.ceil((eventDate - new Date()) / (1000 * 60 * 60 * 24));
+
+      // Generate QR code properly
+      let qrCode = null;
+      if (include_qr === 'true') {
+        qrCode = await generateQRCode(ticket);
+      }
 
       return {
         ticket_id: ticket.ticket_id,
@@ -172,7 +180,7 @@ export default async function handler(req, res) {
           purchase_date: ticket.purchase_date,
           payment_status: payment?.payment_status
         },
-        qr_code: include_qr === 'true' ? generateQRCode(ticket.qr_code_hash) : null,
+        qr_code: qrCode,
         qr_data: ticket.qr_code_hash,
         status: ticket.ticket_status,
         validity: {
@@ -197,7 +205,7 @@ export default async function handler(req, res) {
           verification_status: userData.verification_status
         }
       };
-    });
+    }));
 
     // Group by event if requested
     if (group_by_event === 'true') {
@@ -298,6 +306,67 @@ export default async function handler(req, res) {
   }
 }
 
+// 🔧 FIXED: Generate QR code with proper dynamic import and fallback
+async function generateQRCode(ticket) {
+  try {
+    // Method 1: Use pre-generated QR code if available
+    if (ticket.qr_code_base64) {
+      console.log('✅ Using pre-generated QR code for ticket:', ticket.ticket_id);
+      return ticket.qr_code_base64;
+    }
+
+    // Method 2: Generate QR code dynamically with proper import
+    console.log('🔄 Generating QR code for ticket:', ticket.ticket_id);
+    
+    // Dynamic import for QRCode package
+    const QRCodeModule = await import('qrcode');
+    const QRCode = QRCodeModule.default || QRCodeModule;
+
+    // Create QR data structure
+    const qrData = {
+      ticket_id: ticket.ticket_id,
+      blockchain_token_id: ticket.nft_token_id || ticket.blockchain_ticket_id,
+      event_id: ticket.event_id,
+      validation_hash: ticket.qr_code_hash,
+      issued_at: ticket.purchase_date || new Date().toISOString(),
+      validation_url: `${process.env.API_BASE_URL || 'https://ticketingdb.vercel.app'}/api/tickets/validate`
+    };
+
+    // Generate QR code as data URL
+    const qrCodeDataURL = await QRCode.toDataURL(JSON.stringify(qrData), {
+      width: 300,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#FFFFFF'
+      }
+    });
+
+    console.log('✅ QR code generated successfully for ticket:', ticket.ticket_id);
+    return qrCodeDataURL;
+
+  } catch (error) {
+    console.error('❌ QR code generation failed for ticket:', ticket.ticket_id, error.message);
+    
+    // Method 3: Fallback to simple placeholder
+    return generateFallbackQR(ticket);
+  }
+}
+
+// Fallback QR code generation without external dependencies
+function generateFallbackQR(ticket) {
+  console.log('🆘 Using fallback QR generation for ticket:', ticket.ticket_id);
+  
+  // Create simple data structure
+  const qrData = `TICKET:${ticket.ticket_id}:${ticket.qr_code_hash}:${ticket.nft_token_id || 'N/A'}`;
+  
+  // Return as a simple data URL (you can replace this with actual QR generation later)
+  const base64Data = Buffer.from(qrData).toString('base64');
+  
+  // Return a placeholder that indicates QR data is available
+  return `data:text/plain;base64,${base64Data}`;
+}
+
 // Group tickets by parent ticket
 function groupTicketsByParent(tickets) {
   const groups = [];
@@ -376,20 +445,4 @@ function calculateOverallSummary(tickets) {
   delete summary.events; // Remove Set object for JSON serialization
 
   return summary;
-}
-
-// Generate QR code as base64 (placeholder implementation)
-function generateQRCode(ticket) {
-  if (ticket.qr_code_base64) {
-    return ticket.qr_code_base64; // Already generated QR
-  }
-  
-  // Fallback: generate on-demand
-  const qrData = {
-    ticket_id: ticket.ticket_id,
-    blockchain_token_id: ticket.nft_token_id,
-    validation_hash: ticket.qr_code_hash
-  };
-  
-  return QRCode.toDataURL(JSON.stringify(qrData));
 }
