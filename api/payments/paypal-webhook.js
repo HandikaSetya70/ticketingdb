@@ -88,56 +88,63 @@ export default async function handler(req, res) {
 
     console.log('🔍 ============ ORDER ID EXTRACTION ============');
     console.log('📦 Resource object keys:', Object.keys(resource || {}));
+    console.log('📦 Full resource structure:');
+    console.log(JSON.stringify(resource, null, 2));
     
-    // Method 1: Check supplementary_data
-    if (resource.supplementary_data?.related_ids?.order_id) {
-      paypalOrderId = resource.supplementary_data.related_ids.order_id;
-      console.log('✅ Method 1 - Found order ID in supplementary_data:', paypalOrderId);
+    // For PAYMENT.CAPTURE.COMPLETED, we need to look at different places
+    if (event_type === 'PAYMENT.CAPTURE.COMPLETED') {
+      console.log('🎯 Processing PAYMENT.CAPTURE.COMPLETED event');
+      
+      // Method 1: Check supplementary_data.related_ids.order_id
+      if (resource.supplementary_data?.related_ids?.order_id) {
+        paypalOrderId = resource.supplementary_data.related_ids.order_id;
+        console.log('✅ Method 1 - Found order ID in supplementary_data:', paypalOrderId);
+      }
+      
+      // Method 2: Sometimes it's directly in the resource for captures
+      else if (resource.invoice_id) {
+        paypalOrderId = resource.invoice_id;
+        console.log('✅ Method 2 - Found order ID in resource.invoice_id:', paypalOrderId);
+      }
+      
+      // Method 3: Check purchase_units array
+      else if (resource.purchase_units?.[0]) {
+        const purchaseUnit = resource.purchase_units[0];
+        console.log('🔍 Purchase unit structure:', JSON.stringify(purchaseUnit, null, 2));
+        
+        if (purchaseUnit.custom_id) {
+          paypalOrderId = purchaseUnit.custom_id;
+          console.log('✅ Method 3a - Found order ID in purchase_units[0].custom_id:', paypalOrderId);
+        } else if (purchaseUnit.reference_id) {
+          paypalOrderId = purchaseUnit.reference_id;
+          console.log('✅ Method 3b - Found order ID in purchase_units[0].reference_id:', paypalOrderId);
+        } else if (purchaseUnit.invoice_id) {
+          paypalOrderId = purchaseUnit.invoice_id;
+          console.log('✅ Method 3c - Found order ID in purchase_units[0].invoice_id:', paypalOrderId);
+        }
+      }
+      
+      // Method 4: Try to use the transaction ID itself as a fallback search
+      if (!paypalOrderId) {
+        console.log('⚠️ No order ID found in capture, will search by transaction ID');
+        paypalOrderId = paypalTransactionId; // Will be used as fallback in DB search
+      }
     }
     
-    // Method 2: Check custom_id in purchase_units
-    else if (resource.purchase_units?.[0]?.custom_id) {
-      paypalOrderId = resource.purchase_units[0].custom_id;
-      console.log('✅ Method 2 - Found order ID in custom_id:', paypalOrderId);
-    }
-    
-    // Method 3: Check reference_id in purchase_units
-    else if (resource.purchase_units?.[0]?.reference_id) {
-      paypalOrderId = resource.purchase_units[0].reference_id;
-      console.log('✅ Method 3 - Found order ID in reference_id:', paypalOrderId);
-    }
-    
-    // Method 4: Check invoice_id in purchase_units
-    else if (resource.purchase_units?.[0]?.invoice_id) {
-      paypalOrderId = resource.purchase_units[0].invoice_id;
-      console.log('✅ Method 4 - Found order ID in invoice_id:', paypalOrderId);
-    }
-    
-    // Method 5: For CHECKOUT.ORDER.APPROVED, the resource.id IS the order ID
+    // For CHECKOUT.ORDER.APPROVED, the resource.id IS the order ID
     else if (event_type === 'CHECKOUT.ORDER.APPROVED') {
       paypalOrderId = resource.id;
       console.log('✅ Method 5 - Using resource.id as order ID for CHECKOUT.ORDER.APPROVED:', paypalOrderId);
     }
     
-    // Method 6: Check if we can get it from the resource structure
-    else if (resource.order_id) {
-      paypalOrderId = resource.order_id;
-      console.log('✅ Method 6 - Found order_id directly in resource:', paypalOrderId);
-    }
-    
-    else {
-      console.error('❌ CRITICAL ERROR: Could not extract PayPal order ID from webhook');
-      console.error('📦 Available resource structure:');
-      console.error(JSON.stringify(resource, null, 2));
-      
-      // Log all possible paths where order ID might be hiding
+    // Last resort: search everywhere
+    if (!paypalOrderId) {
       console.log('🔍 Searching all possible paths for order ID...');
       searchForOrderId(resource, '');
       
-      return res.status(400).json({
-        status: 'error',
-        message: 'PayPal order ID not found in webhook payload'
-      });
+      // If still no order ID found, we'll try the database search with transaction ID
+      console.log('⚠️ Using transaction ID as fallback for database search');
+      paypalOrderId = paypalTransactionId;
     }
 
     // Extract captured amount
@@ -161,10 +168,11 @@ export default async function handler(req, res) {
     // Find the payment record with improved search
     console.log('🔍 ============ DATABASE PAYMENT LOOKUP ============');
     console.log('🔍 Searching for payment with order ID:', paypalOrderId);
+    console.log('🔍 Alternative search with transaction ID:', paypalTransactionId);
     
     let payment, paymentError;
     
-    // First, try to find by paypal_order_id
+    // First, try to find by paypal_order_id (most reliable method)
     const { data: paymentData, error: primaryError } = await supabase
       .from('payments')
       .select('*')
@@ -173,22 +181,97 @@ export default async function handler(req, res) {
       .single();
 
     if (primaryError || !paymentData) {
-      console.log('⚠️ Primary search failed, trying alternative searches...');
+      console.log('⚠️ Primary search by order ID failed, trying alternative searches...');
+      console.log('   📄 Primary search error:', primaryError?.message);
       
-      // Try searching by transaction_id if we have it
-      const { data: altPaymentData, error: altError } = await supabase
-        .from('payments')
-        .select('*')
-        .eq('paypal_transaction_id', paypalTransactionId)
-        .eq('payment_status', 'pending')
-        .single();
+      // Try searching by transaction_id if we have it and it's different from order ID
+      if (paypalTransactionId && paypalTransactionId !== paypalOrderId) {
+        console.log('🔍 Trying search by transaction ID:', paypalTransactionId);
         
-      if (altError || !altPaymentData) {
+        const { data: altPaymentData, error: altError } = await supabase
+          .from('payments')
+          .select('*')
+          .eq('paypal_order_id', paypalTransactionId)
+          .eq('payment_status', 'pending')
+          .single();
+          
+        if (altError || !altPaymentData) {
+          console.log('⚠️ Transaction ID search also failed, trying paypal_transaction_id field...');
+          
+          // Try searching in the paypal_transaction_id field
+          const { data: txnPaymentData, error: txnError } = await supabase
+            .from('payments')
+            .select('*')
+            .eq('paypal_transaction_id', paypalTransactionId)
+            .eq('payment_status', 'pending')
+            .single();
+            
+          if (txnError || !txnPaymentData) {
+            console.log('⚠️ All searches failed, trying without status filter...');
+            
+            // Last resort: search without status filter (maybe it was already processed)
+            const { data: anyStatusPayment, error: anyStatusError } = await supabase
+              .from('payments')
+              .select('*')
+              .eq('paypal_order_id', paypalOrderId)
+              .order('created_at', { ascending: false })
+              .limit(1)
+              .single();
+              
+            if (anyStatusError || !anyStatusPayment) {
+              console.error('❌ CRITICAL ERROR: Payment not found in database with any method');
+              console.error('   🔍 Searched for order ID:', paypalOrderId);
+              console.error('   🔍 Searched for transaction ID:', paypalTransactionId);
+              console.error('   📄 Final error:', anyStatusError);
+              
+              // Log recent payments for debugging
+              console.log('🔍 Checking recent payments for debugging...');
+              const { data: recentPayments } = await supabase
+                .from('payments')
+                .select('payment_id, paypal_order_id, paypal_transaction_id, payment_status, created_at')
+                .order('created_at', { ascending: false })
+                .limit(10);
+                
+              console.log('📋 Recent payments in database:');
+              recentPayments?.forEach((p, i) => {
+                console.log(`   ${i + 1}. ID: ${p.payment_id}, Order: ${p.paypal_order_id}, Transaction: ${p.paypal_transaction_id || 'null'}, Status: ${p.payment_status}`);
+              });
+              
+              return res.status(404).json({
+                status: 'error',
+                message: 'Payment record not found',
+                debug: {
+                  searchedOrderId: paypalOrderId,
+                  searchedTransactionId: paypalTransactionId,
+                  recentPayments: recentPayments?.slice(0, 5)
+                }
+              });
+            } else {
+              payment = anyStatusPayment;
+              console.log(`✅ Payment found without status filter (current status: ${payment.payment_status})`);
+              
+              // If payment is already confirmed, don't process again
+              if (payment.payment_status === 'confirmed') {
+                console.log('⚠️ Payment already processed, skipping duplicate processing');
+                return res.status(200).json({
+                  status: 'success',
+                  message: 'Payment already processed (duplicate webhook)'
+                });
+              }
+            }
+          } else {
+            payment = txnPaymentData;
+            console.log('✅ Payment found using paypal_transaction_id field search');
+          }
+        } else {
+          payment = altPaymentData;
+          console.log('✅ Payment found using transaction ID as order ID search');
+        }
+      } else {
         console.error('❌ CRITICAL ERROR: Payment not found in database');
         console.error('   🔍 Searched for order ID:', paypalOrderId);
-        console.error('   🔍 Searched for transaction ID:', paypalTransactionId);
+        console.error('   🔍 No alternative transaction ID to search');
         console.error('   📄 Primary error:', primaryError);
-        console.error('   📄 Alternative error:', altError);
         
         // Log recent payments for debugging
         console.log('🔍 Checking recent payments for debugging...');
@@ -200,7 +283,7 @@ export default async function handler(req, res) {
           
         console.log('📋 Recent payments in database:');
         recentPayments?.forEach((p, i) => {
-          console.log(`   ${i + 1}. ID: ${p.payment_id}, Order: ${p.paypal_order_id}, Status: ${p.payment_status}`);
+          console.log(`   ${i + 1}. ID: ${p.payment_id}, Order: ${p.paypal_order_id}, Transaction: ${p.paypal_transaction_id || 'null'}, Status: ${p.payment_status}`);
         });
         
         return res.status(404).json({
@@ -208,18 +291,12 @@ export default async function handler(req, res) {
           message: 'Payment record not found',
           debug: {
             searchedOrderId: paypalOrderId,
-            searchedTransactionId: paypalTransactionId,
             recentPayments: recentPayments?.slice(0, 3)
           }
         });
-      } else {
-        payment = altPaymentData;
-        paymentError = null;
-        console.log('✅ Payment found using alternative search (transaction ID)');
       }
     } else {
       payment = paymentData;
-      paymentError = null;
       console.log('✅ Payment found using primary search (order ID)');
     }
 
