@@ -26,6 +26,125 @@ const CONTRACT_ABI = [
   "function owner() external view returns (address)"
 ];
 
+// Helper function to recursively search for order ID in the payload
+function searchForOrderId(obj, path = '') {
+  if (typeof obj !== 'object' || obj === null) return;
+  
+  for (const [key, value] of Object.entries(obj)) {
+    const currentPath = path ? `${path}.${key}` : key;
+    
+    // Look for potential order ID fields
+    if (key.toLowerCase().includes('order') && typeof value === 'string') {
+      console.log(`🔍 Potential order ID at ${currentPath}:`, value);
+    }
+    
+    // Recursively search nested objects
+    if (typeof value === 'object' && value !== null) {
+      searchForOrderId(value, currentPath);
+    }
+  }
+}
+
+// Verify PayPal webhook signature with logging
+async function verifyPayPalWebhook(req) {
+  try {
+    console.log('🔐 Verifying PayPal webhook signature...');
+    
+    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+    const headers = req.headers;
+    const body = JSON.stringify(req.body);
+
+    console.log('📋 Webhook verification details:');
+    console.log('   🆔 Webhook ID:', webhookId || 'NOT SET');
+    console.log('   📝 Headers present:', Object.keys(headers));
+    
+    const expectedSignature = headers['paypal-transmission-sig'];
+    
+    if (!expectedSignature) {
+      console.log('⚠️ No PayPal signature found in headers');
+      console.log('🧪 Allowing for testing purposes');
+      return true;
+    }
+
+    console.log('✅ PayPal signature found:', expectedSignature?.substring(0, 20) + '...');
+    console.log('⚠️ Webhook signature verification skipped for testing');
+    return true;
+
+  } catch (error) {
+    console.error('❌ Webhook verification failed:', error);
+    return false;
+  }
+}
+
+// 🆕 NEW: Log purchase activity for bot detection
+async function logPurchaseActivity(userId, eventId, paymentId, quantity) {
+  try {
+    console.log('📝 ============ LOGGING PURCHASE ACTIVITY ============');
+    console.log('   👤 User ID:', userId);
+    console.log('   🎫 Event ID:', eventId);
+    console.log('   💰 Payment ID:', paymentId);
+    console.log('   📊 Quantity:', quantity);
+
+    const { data, error } = await supabase
+      .from('purchase_history')
+      .insert({
+        user_id: userId,
+        event_id: eventId,
+        payment_id: paymentId,
+        quantity: quantity,
+        status: 'normal',
+        flag: 'none'
+      });
+
+    if (error) {
+      console.error('❌ Failed to log purchase activity:', error);
+      console.error('   📄 Error details:', error.message);
+      // Don't throw error - just log it, we don't want to break ticket creation
+    } else {
+      console.log('✅ Purchase activity logged successfully');
+      console.log('   📋 Log entry created for bot detection system');
+    }
+
+    return data;
+  } catch (error) {
+    console.error('❌ Error in logPurchaseActivity:', error);
+    // Don't throw - logging failure shouldn't stop ticket creation
+  }
+}
+
+// Generate token ID for blockchain (convert UUID to uint256) with logging
+function generateTokenId(ticketUuid) {
+  try {
+    console.log('🔢 Generating blockchain token ID...');
+    console.log('   🎫 Input UUID:', ticketUuid);
+    
+    // Create deterministic hash from UUID
+    const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
+    console.log('   🔐 SHA256 Hash:', hash);
+    
+    // For PostgreSQL bigint compatibility, use only first 15 hex characters (60 bits)
+    const truncatedHash = hash.substring(0, 15);
+    console.log('   ✂️ Truncated Hash (15 chars):', truncatedHash);
+    
+    // Convert to BigInt then to string
+    const tokenId = BigInt('0x' + truncatedHash);
+    const tokenIdString = tokenId.toString();
+    console.log('   🔢 Final Token ID:', tokenIdString);
+    
+    return tokenIdString;
+  } catch (error) {
+    console.error('❌ Token ID generation failed:', error);
+    
+    // Fallback: use timestamp + random
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000);
+    const fallbackId = (timestamp * 1000 + random).toString();
+    console.log('🆘 Using fallback token ID:', fallbackId);
+    
+    return fallbackId;
+  }
+}
+
 export default async function handler(req, res) {
   console.log('🚀 ============ WEBHOOK HANDLER STARTED ============');
   console.log('⏰ Timestamp:', new Date().toISOString());
@@ -707,70 +826,6 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
       error: error.message,
       timestamp: new Date().toISOString()
     };
-  }
-}
-
-// Generate token ID for blockchain (convert UUID to uint256) with logging
-function generateTokenId(ticketUuid) {
-  try {
-    console.log('🔢 Generating blockchain token ID...');
-    console.log('   🎫 Input UUID:', ticketUuid);
-    
-    // Create deterministic hash from UUID
-    const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
-    console.log('   🔐 SHA256 Hash:', hash);
-    
-    // For PostgreSQL bigint compatibility, use only first 15 hex characters (60 bits)
-    const truncatedHash = hash.substring(0, 15);
-    console.log('   ✂️ Truncated Hash (15 chars):', truncatedHash);
-    
-    // Convert to BigInt then to string
-    const tokenId = BigInt('0x' + truncatedHash);
-    const tokenIdString = tokenId.toString();
-    console.log('   🔢 Final Token ID:', tokenIdString);
-    
-    return tokenIdString;
-  } catch (error) {
-    console.error('❌ Token ID generation failed:', error);
-    
-    // Fallback: use timestamp + random
-    const timestamp = Date.now();
-    const random = Math.floor(Math.random() * 1000);
-    const fallbackId = (timestamp * 1000 + random).toString();
-    console.log('🆘 Using fallback token ID:', fallbackId);
-    
-    return fallbackId;
-  }
-}
-
-// Verify PayPal webhook signature with logging
-async function verifyPayPalWebhook(req) {
-  try {
-    console.log('🔐 Verifying PayPal webhook signature...');
-    
-    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
-    const headers = req.headers;
-    const body = JSON.stringify(req.body);
-
-    console.log('📋 Webhook verification details:');
-    console.log('   🆔 Webhook ID:', webhookId || 'NOT SET');
-    console.log('   📝 Headers present:', Object.keys(headers));
-    
-    const expectedSignature = headers['paypal-transmission-sig'];
-    
-    if (!expectedSignature) {
-      console.log('⚠️ No PayPal signature found in headers');
-      console.log('🧪 Allowing for testing purposes');
-      return true;
-    }
-
-    console.log('✅ PayPal signature found:', expectedSignature?.substring(0, 20) + '...');
-    console.log('⚠️ Webhook signature verification skipped for testing');
-    return true;
-
-  } catch (error) {
-    console.error('❌ Webhook verification failed:', error);
-    return false;
   }
 }
 
