@@ -1,5 +1,5 @@
 // /api/tickets/validate.js
-// QR Code ticket validation endpoint for scanner app
+// QR Code ticket validation endpoint for scanner app with enhanced blockchain validation
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -153,32 +153,11 @@ export default async function handler(req, res) {
 
     console.log('✅ Ticket found in database:');
     console.log('   🎫 Ticket Number:', ticket.ticket_number);
-    console.log('   📊 Status:', ticket.ticket_status);
+    console.log('   📊 Database Status:', ticket.ticket_status);
     console.log('   🎭 Event:', ticket.events?.event_name);
     console.log('   👤 Holder:', ticket.users?.id_name);
-
-    // Check if ticket is already revoked in database
-    if (ticket.ticket_status === 'revoked') {
-      console.log('❌ Ticket is revoked in database');
-      await logValidationAttempt(ticket_id, scanner_info, 'revoked', 'Ticket revoked in database');
-      
-      return res.status(200).json({
-        status: 'error',
-        validation_result: 'revoked',
-        message: 'Ticket has been revoked',
-        ticket_info: {
-          ticket_number: ticket.ticket_number,
-          event_name: ticket.events?.event_name || 'Unknown Event',
-          holder_name: ticket.users?.id_name || 'Unknown',
-          entry_type: 'Revoked'
-        },
-        ui_feedback: {
-          color: "red",
-          message: "🚫 REVOKED TICKET",
-          sound: "error_beep"
-        }
-      });
-    }
+    console.log('   ⛓️ Blockchain Registered:', ticket.blockchain_registered);
+    console.log('   🔗 NFT Token ID:', ticket.nft_token_id);
 
     // Check if event has passed
     const eventDate = new Date(ticket.events?.event_date);
@@ -193,24 +172,27 @@ export default async function handler(req, res) {
     // 2. BLOCKCHAIN VALIDATION
     console.log('🔗 ============ BLOCKCHAIN VALIDATION ============');
     let blockchainStatus = {
-      is_revoked: false,
-      contract_status: 1,
-      last_checked: new Date().toISOString(),
-      contract_verified: false,
-      error: null
+        is_revoked: false,
+        is_valid: false,
+        contract_status: 0,
+        last_checked: new Date().toISOString(),
+        contract_verified: false,
+        error: null
     };
 
     if (blockchain_token_id || ticket.nft_token_id) {
-      const tokenId = blockchain_token_id || ticket.nft_token_id;
-      console.log('🔍 Checking blockchain status for token:', tokenId);
-      
-      blockchainStatus = await validateTicketOnBlockchain(tokenId);
-      console.log('📊 Blockchain validation result:');
-      console.log('   ✅ Contract Verified:', blockchainStatus.contract_verified);
-      console.log('   📊 Status:', blockchainStatus.contract_status);
-      console.log('   🚫 Is Revoked:', blockchainStatus.is_revoked);
+        const tokenId = blockchain_token_id || ticket.nft_token_id;
+        console.log('🔍 Checking blockchain status for token:', tokenId);
+        
+        blockchainStatus = await validateTicketOnBlockchain(tokenId);
+        console.log('📊 Blockchain validation result:');
+        console.log('   ✅ Contract Verified:', blockchainStatus.contract_verified);
+        console.log('   📊 Status:', blockchainStatus.contract_status);
+        console.log('   🎫 Is Valid:', blockchainStatus.is_valid);
+        console.log('   🚫 Is Revoked:', blockchainStatus.is_revoked);
+        console.log('   ❌ Error:', blockchainStatus.error || 'None');
     } else {
-      console.log('⚠️ No blockchain token ID found, skipping blockchain validation');
+        console.log('⚠️ No blockchain token ID found, skipping blockchain validation');
     }
 
     // 3. COMBINED VALIDATION LOGIC
@@ -220,49 +202,76 @@ export default async function handler(req, res) {
     let statusMessage;
     let uiFeedback;
     
-    // Check if ticket is revoked on blockchain
+    // Priority 1: Check blockchain revocation status (most authoritative)
     if (blockchainStatus.contract_verified && blockchainStatus.is_revoked) {
-      console.log('❌ DECISION: Ticket revoked on blockchain');
-      validationResult = 'revoked';
-      statusMessage = 'Ticket revoked on blockchain';
-      uiFeedback = {
-        color: "red",
-        message: "🚫 REVOKED (BLOCKCHAIN)",
-        sound: "error_beep"
-      };
+        console.log('❌ DECISION: Ticket revoked on blockchain');
+        validationResult = 'revoked';
+        statusMessage = 'Ticket revoked on blockchain';
+        uiFeedback = {
+            color: "red",
+            message: "🚫 REVOKED (BLOCKCHAIN)",
+            sound: "error_beep"
+        };
     }
-    // Check if database status is not valid
+    // Priority 2: Check database revocation status
+    else if (ticket.ticket_status === 'revoked') {
+        console.log('❌ DECISION: Ticket revoked in database');
+        validationResult = 'revoked';
+        statusMessage = 'Ticket revoked in database';
+        uiFeedback = {
+            color: "red",
+            message: "🚫 REVOKED (DATABASE)",
+            sound: "error_beep"
+        };
+    }
+    // Priority 3: Check if blockchain shows invalid but database shows valid
+    else if (blockchainStatus.contract_verified && !blockchainStatus.is_valid && blockchainStatus.contract_status === 0) {
+        console.log('❌ DECISION: Ticket not registered on blockchain');
+        validationResult = 'invalid';
+        statusMessage = 'Ticket not found on blockchain';
+        uiFeedback = {
+            color: "orange",
+            message: "⚠️ NOT ON BLOCKCHAIN",
+            sound: "error_beep"
+        };
+    }
+    // Priority 4: Check database status
     else if (ticket.ticket_status !== 'valid') {
-      console.log('❌ DECISION: Ticket not valid in database');
-      validationResult = 'invalid';
-      statusMessage = `Ticket status: ${ticket.ticket_status}`;
-      uiFeedback = {
-        color: "red",
-        message: "🚫 INVALID STATUS",
-        sound: "error_beep"
-      };
+        console.log('❌ DECISION: Ticket not valid in database');
+        validationResult = 'invalid';
+        statusMessage = `Ticket status: ${ticket.ticket_status}`;
+        uiFeedback = {
+            color: "red",
+            message: "🚫 INVALID STATUS",
+            sound: "error_beep"
+        };
     }
-    // Check if event has passed (but allow within 1 hour after event)
+    // Priority 5: Check if event has passed (allow 1 hour grace period)
     else if (eventHasPassed && (now.getTime() - eventDate.getTime()) > (60 * 60 * 1000)) {
-      console.log('❌ DECISION: Event has passed (more than 1 hour ago)');
-      validationResult = 'invalid';
-      statusMessage = 'Event has already ended';
-      uiFeedback = {
-        color: "orange",
-        message: "⏰ EVENT ENDED",
-        sound: "error_beep"
-      };
+        console.log('❌ DECISION: Event has passed (more than 1 hour ago)');
+        validationResult = 'invalid';
+        statusMessage = 'Event has already ended';
+        uiFeedback = {
+            color: "orange",
+            message: "⏰ EVENT ENDED",
+            sound: "error_beep"
+        };
     }
     // All checks passed - ticket is valid
     else {
-      console.log('✅ DECISION: Ticket is valid for entry');
-      validationResult = 'valid';
-      statusMessage = 'Ticket is valid for entry';
-      uiFeedback = {
-        color: "green",
-        message: "✅ VALID - ALLOW ENTRY",
-        sound: "success_beep"
-      };
+        console.log('✅ DECISION: Ticket is valid for entry');
+        
+        // Additional check: warn if blockchain verification failed but database is valid
+        const warningMessage = !blockchainStatus.contract_verified && ticket.blockchain_registered ? 
+            ' (⚠️ Blockchain verification failed)' : '';
+        
+        validationResult = 'valid';
+        statusMessage = 'Ticket is valid for entry' + warningMessage;
+        uiFeedback = {
+            color: "green",
+            message: "✅ VALID - ALLOW ENTRY",
+            sound: "success_beep"
+        };
     }
 
     // 4. LOG VALIDATION ATTEMPT
@@ -294,7 +303,9 @@ export default async function handler(req, res) {
         location: scanner_info.location,
         device_id: scanner_info.device_id,
         database_status: ticket.ticket_status,
-        blockchain_checked: blockchainStatus.contract_verified
+        blockchain_checked: blockchainStatus.contract_verified,
+        blockchain_verified: blockchainStatus.contract_verified,
+        ticket_exists_on_blockchain: blockchainStatus.is_valid || blockchainStatus.is_revoked
       }
     };
 
@@ -320,10 +331,10 @@ export default async function handler(req, res) {
   }
 }
 
-// Validate ticket on blockchain
+// Enhanced blockchain validation function
 async function validateTicketOnBlockchain(tokenId) {
   try {
-    console.log('🔗 Connecting to blockchain...');
+    console.log('🔗 ============ BLOCKCHAIN CONNECTION ============');
     
     // Import ethers dynamically
     const ethersModule = await import('ethers');
@@ -333,6 +344,7 @@ async function validateTicketOnBlockchain(tokenId) {
       console.log('⚠️ Blockchain configuration missing, skipping validation');
       return {
         is_revoked: false,
+        is_valid: false,
         contract_status: 0,
         last_checked: new Date().toISOString(),
         contract_verified: false,
@@ -340,24 +352,73 @@ async function validateTicketOnBlockchain(tokenId) {
       };
     }
 
-    console.log('🌐 RPC URL:', BLOCKCHAIN_CONFIG.rpcUrl);
-    console.log('📋 Contract:', BLOCKCHAIN_CONFIG.contractAddress);
-    console.log('🎫 Token ID:', tokenId);
+    console.log('🌐 Blockchain configuration:');
+    console.log('   🌐 RPC URL:', BLOCKCHAIN_CONFIG.rpcUrl);
+    console.log('   📋 Contract:', BLOCKCHAIN_CONFIG.contractAddress);
+    console.log('   🎫 Token ID:', tokenId);
 
     // Initialize provider and contract
     const provider = new ethers.providers.JsonRpcProvider(BLOCKCHAIN_CONFIG.rpcUrl);
     const contract = new ethers.Contract(BLOCKCHAIN_CONFIG.contractAddress, CONTRACT_ABI, provider);
 
-    // Get ticket status from contract
+    // Test contract connection first
+    console.log('🔍 Testing contract connection...');
+    
+    // Get ticket status from contract with timeout
     console.log('📞 Calling contract.getTicketStatus...');
-    const status = await contract.getTicketStatus(tokenId);
+    const statusPromise = contract.getTicketStatus(tokenId);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Blockchain call timeout after 10 seconds')), 10000)
+    );
+    
+    const status = await Promise.race([statusPromise, timeoutPromise]);
     const statusNumber = parseInt(status.toString());
     
     console.log('📊 Blockchain response:');
     console.log('   📊 Raw status:', status.toString());
     console.log('   📊 Status number:', statusNumber);
+    console.log('   ❌ Invalid (0):', statusNumber === 0);
     console.log('   ✅ Valid (1):', statusNumber === 1);
     console.log('   🚫 Revoked (2):', statusNumber === 2);
+
+    // Additional verification calls
+    let isValidForEntry = false;
+    let isRevoked = false;
+    
+    try {
+      console.log('🔍 Additional verification checks...');
+      const validPromise = contract.isValidForEntry(tokenId);
+      const revokedPromise = contract.isRevoked(tokenId);
+      
+      const validTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('isValidForEntry timeout')), 5000)
+      );
+      const revokedTimeout = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('isRevoked timeout')), 5000)
+      );
+      
+      isValidForEntry = await Promise.race([validPromise, validTimeout]);
+      isRevoked = await Promise.race([revokedPromise, revokedTimeout]);
+      
+      console.log('   🎫 isValidForEntry:', isValidForEntry);
+      console.log('   🚫 isRevoked:', isRevoked);
+      
+    } catch (verifyError) {
+      console.log('⚠️ Additional verification failed:', verifyError.message);
+      // Continue with basic status check
+    }
+
+    // Cross-validate the results
+    const expectedValid = statusNumber === 1;
+    const expectedRevoked = statusNumber === 2;
+    
+    if (isValidForEntry !== undefined && isValidForEntry !== expectedValid) {
+      console.log('⚠️ Status mismatch: getTicketStatus vs isValidForEntry');
+    }
+    
+    if (isRevoked !== undefined && isRevoked !== expectedRevoked) {
+      console.log('⚠️ Status mismatch: getTicketStatus vs isRevoked');
+    }
 
     return {
       is_revoked: statusNumber === 2,
@@ -365,11 +426,31 @@ async function validateTicketOnBlockchain(tokenId) {
       contract_status: statusNumber,
       last_checked: new Date().toISOString(),
       contract_verified: true,
-      error: null
+      error: null,
+      additional_checks: {
+        isValidForEntry: isValidForEntry,
+        isRevoked: isRevoked
+      }
     };
 
   } catch (error) {
-    console.error('❌ Blockchain validation failed:', error.message);
+    console.error('❌ ============ BLOCKCHAIN VALIDATION FAILED ============');
+    console.error('❌ Error message:', error.message);
+    console.error('❌ Error type:', error.code || 'Unknown');
+    
+    // Categorize error types
+    let errorCategory = 'unknown';
+    if (error.message.includes('timeout')) {
+      errorCategory = 'timeout';
+    } else if (error.message.includes('network')) {
+      errorCategory = 'network';
+    } else if (error.message.includes('revert')) {
+      errorCategory = 'contract_revert';
+    } else if (error.message.includes('gas')) {
+      errorCategory = 'gas_error';
+    }
+    
+    console.error('❌ Error category:', errorCategory);
     
     return {
       is_revoked: false,
@@ -377,15 +458,22 @@ async function validateTicketOnBlockchain(tokenId) {
       contract_status: 0,
       last_checked: new Date().toISOString(),
       contract_verified: false,
-      error: error.message
+      error: error.message,
+      error_category: errorCategory
     };
   }
 }
 
-// Log validation attempt
+// Enhanced validation logging
 async function logValidationAttempt(ticketId, scannerInfo, result, message) {
   try {
-    console.log('📝 Logging validation attempt...');
+    console.log('📝 ============ LOGGING VALIDATION ATTEMPT ============');
+    console.log('   🎫 Ticket ID:', ticketId);
+    console.log('   👤 Admin ID:', scannerInfo.admin_id);
+    console.log('   📊 Result:', result);
+    console.log('   📍 Location:', scannerInfo.location);
+    console.log('   📱 Device:', scannerInfo.device_id);
+    console.log('   💬 Message:', message);
     
     const { error } = await supabase
       .from('ticket_validation_log')
@@ -406,6 +494,7 @@ async function logValidationAttempt(ticketId, scannerInfo, result, message) {
       console.log('✅ Validation logged successfully');
     }
   } catch (error) {
-    console.error('❌ Logging error:', error.message);
+    console.error('❌ Logging exception:', error.message);
+    // Don't throw - logging failure shouldn't break validation
   }
 }
