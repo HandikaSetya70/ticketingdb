@@ -1,5 +1,5 @@
 // /api/payments/paypal-webhook.js
-// Fixed PayPal webhook handler with proper order ID extraction
+// Enhanced PayPal webhook handler with purchase history logging for bot detection
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
@@ -380,6 +380,42 @@ function searchForOrderId(obj, path = '') {
   }
 }
 
+// 🆕 NEW: Log purchase activity for bot detection
+async function logPurchaseActivity(userId, eventId, paymentId, quantity) {
+  try {
+    console.log('📝 ============ LOGGING PURCHASE ACTIVITY ============');
+    console.log('   👤 User ID:', userId);
+    console.log('   🎫 Event ID:', eventId);
+    console.log('   💰 Payment ID:', paymentId);
+    console.log('   📊 Quantity:', quantity);
+
+    const { data, error } = await supabase
+      .from('purchase_history')
+      .insert({
+        user_id: userId,
+        event_id: eventId,
+        payment_id: paymentId,
+        quantity: quantity,
+        status: 'normal',
+        flag: 'none'
+      });
+
+    if (error) {
+      console.error('❌ Failed to log purchase activity:', error);
+      console.error('   📄 Error details:', error.message);
+      // Don't throw error - just log it, we don't want to break ticket creation
+    } else {
+      console.log('✅ Purchase activity logged successfully');
+      console.log('   📋 Log entry created for bot detection system');
+    }
+
+    return data;
+  } catch (error) {
+    console.error('❌ Error in logPurchaseActivity:', error);
+    // Don't throw - logging failure shouldn't stop ticket creation
+  }
+}
+
 // Manual payment processing function with detailed logging
 async function processPaymentManually(payment, paypalTransactionId) {
   try {
@@ -450,6 +486,10 @@ async function processPaymentManually(payment, paypalTransactionId) {
     console.log('🎫 Ticket Price:', parseFloat(event.ticket_price));
     console.log('📊 Calculated Quantity:', quantity);
     console.log(`🎯 Creating ${quantity} tickets for event: ${event.event_name}`);
+
+    // 🆕 NEW: Log purchase activity for bot detection BEFORE updating payment status
+    console.log('📝 ============ BOT DETECTION LOGGING ============');
+    await logPurchaseActivity(payment.user_id, event.event_id, payment.payment_id, quantity);
 
     // Update payment status first
     console.log('💾 ============ PAYMENT STATUS UPDATE ============');
@@ -564,65 +604,7 @@ async function processPaymentManually(payment, paypalTransactionId) {
       console.log(`   🎫 Ticket ${index + 1}: ${ticket.ticket_id}`);
     });
 
-    // Register tickets in blockchain
-    console.log('🔗 ============ BLOCKCHAIN REGISTRATION ============');
-    console.log(`⛓️ Attempting to register ${tokenIds.length} tickets on blockchain...`);
-    
-    const blockchainResult = await registerTicketsInBlockchain(tokenIds, tickets);
-
-    if (blockchainResult.success) {
-      console.log('✅ ============ BLOCKCHAIN SUCCESS ============');
-      console.log('🔗 Transaction Hash:', blockchainResult.transactionHash);
-      console.log('⛽ Gas Used:', blockchainResult.gasUsed);
-      console.log('📦 Block Number:', blockchainResult.blockNumber);
-      
-      // Update tickets as blockchain-registered
-      console.log('💾 Updating ticket NFT status to "minted"...');
-      await supabase
-        .from('tickets')
-        .update({ 
-          nft_mint_status: 'minted',
-          blockchain_registered: true,
-          blockchain_tx_hash: blockchainResult.transactionHash
-        })
-        .in('ticket_id', tickets.map(t => t.ticket_id));
-        
-      console.log(`✅ Successfully registered ${quantity} tickets in blockchain`);
-      
-    } else {
-      console.error('❌ ============ BLOCKCHAIN FAILURE ============');
-      console.error('🔥 Error:', blockchainResult.error);
-      console.error('⏰ Failed at:', blockchainResult.timestamp);
-      
-      // Update tickets with failed status but keep them valid in database
-      console.log('💾 Updating ticket NFT status to "failed"...');
-      await supabase
-        .from('tickets')
-        .update({ 
-          nft_mint_status: 'failed',
-          blockchain_registered: false,
-          blockchain_error: blockchainResult.error
-        })
-        .in('ticket_id', tickets.map(t => t.ticket_id));
-        
-      console.log('⚠️ Tickets remain valid in database despite blockchain failure');
-    }
-
-    console.log('🎉 ============ PAYMENT PROCESSING COMPLETE ============');
-    console.log(`✅ Successfully processed payment: ${payment.payment_id}`);
-    console.log(`🎫 Created ${quantity} tickets for user: ${payment.user_id}`);
-    console.log(`🎭 Event: ${event.event_name}`);
-    console.log(`💰 Amount: $${payment.amount}`);
-
-  } catch (error) {
-    console.error('❌ ============ PAYMENT PROCESSING FAILED ============');
-    console.error('🔥 Error in processPaymentManually:', error.message);
-    console.error('📊 Error stack:', error.stack);
-    throw error;
-  }
-}
-
-// Register tickets in blockchain with detailed logging
+    // Register tickets in blockchain with detailed logging
 async function registerTicketsInBlockchain(tokenIds, tickets) {
   try {
     console.log('🔗 ============ BLOCKCHAIN REGISTRATION DETAILS ============');
@@ -880,3 +862,62 @@ async function sendPaymentSuccessNotification(userId, paymentId) {
     console.error('❌ Failed to send push notification:', error);
   }
 }
+    console.log('🔗 ============ BLOCKCHAIN REGISTRATION ============');
+    console.log(`⛓️ Attempting to register ${tokenIds.length} tickets on blockchain...`);
+    
+    const blockchainResult = await registerTicketsInBlockchain(tokenIds, tickets);
+
+    if (blockchainResult.success) {
+      console.log('✅ ============ BLOCKCHAIN SUCCESS ============');
+      console.log('🔗 Transaction Hash:', blockchainResult.transactionHash);
+      console.log('⛽ Gas Used:', blockchainResult.gasUsed);
+      console.log('📦 Block Number:', blockchainResult.blockNumber);
+      
+      // Update tickets as blockchain-registered
+      console.log('💾 Updating ticket NFT status to "minted"...');
+      await supabase
+        .from('tickets')
+        .update({ 
+          nft_mint_status: 'minted',
+          blockchain_registered: true,
+          blockchain_tx_hash: blockchainResult.transactionHash
+        })
+        .in('ticket_id', tickets.map(t => t.ticket_id));
+        
+      console.log(`✅ Successfully registered ${quantity} tickets in blockchain`);
+      
+    } else {
+      console.error('❌ ============ BLOCKCHAIN FAILURE ============');
+      console.error('🔥 Error:', blockchainResult.error);
+      console.error('⏰ Failed at:', blockchainResult.timestamp);
+      
+      // Update tickets with failed status but keep them valid in database
+      console.log('💾 Updating ticket NFT status to "failed"...');
+      await supabase
+        .from('tickets')
+        .update({ 
+          nft_mint_status: 'failed',
+          blockchain_registered: false,
+          blockchain_error: blockchainResult.error
+        })
+        .in('ticket_id', tickets.map(t => t.ticket_id));
+        
+      console.log('⚠️ Tickets remain valid in database despite blockchain failure');
+    }
+
+    console.log('🎉 ============ PAYMENT PROCESSING COMPLETE ============');
+    console.log(`✅ Successfully processed payment: ${payment.payment_id}`);
+    console.log(`🎫 Created ${quantity} tickets for user: ${payment.user_id}`);
+    console.log(`🎭 Event: ${event.event_name}`);
+    console.log(`💰 Amount: $${payment.amount}`);
+    console.log(`📝 Purchase activity logged for bot detection`);
+
+  } catch (error) {
+    console.error('❌ ============ PAYMENT PROCESSING FAILED ============');
+    console.error('🔥 Error in processPaymentManually:', error.message);
+    console.error('📊 Error stack:', error.stack);
+    throw error;
+  }
+}
+
+// Register tickets
