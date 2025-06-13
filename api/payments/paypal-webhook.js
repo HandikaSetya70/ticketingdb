@@ -1,5 +1,5 @@
 // /api/payments/paypal-webhook.js
-// Enhanced PayPal webhook handler with purchase history logging for bot detection
+// Fixed PayPal webhook handler with proper order ID extraction
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
@@ -25,125 +25,6 @@ const CONTRACT_ABI = [
   "function getTicketStatus(uint256 tokenId) external view returns (uint8)",
   "function owner() external view returns (address)"
 ];
-
-// Helper function to recursively search for order ID in the payload
-function searchForOrderId(obj, path = '') {
-  if (typeof obj !== 'object' || obj === null) return;
-  
-  for (const [key, value] of Object.entries(obj)) {
-    const currentPath = path ? `${path}.${key}` : key;
-    
-    // Look for potential order ID fields
-    if (key.toLowerCase().includes('order') && typeof value === 'string') {
-      console.log(`🔍 Potential order ID at ${currentPath}:`, value);
-    }
-    
-    // Recursively search nested objects
-    if (typeof value === 'object' && value !== null) {
-      searchForOrderId(value, currentPath);
-    }
-  }
-}
-
-// Verify PayPal webhook signature with logging
-async function verifyPayPalWebhook(req) {
-  try {
-    console.log('🔐 Verifying PayPal webhook signature...');
-    
-    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
-    const headers = req.headers;
-    const body = JSON.stringify(req.body);
-
-    console.log('📋 Webhook verification details:');
-    console.log('   🆔 Webhook ID:', webhookId || 'NOT SET');
-    console.log('   📝 Headers present:', Object.keys(headers));
-    
-    const expectedSignature = headers['paypal-transmission-sig'];
-    
-    if (!expectedSignature) {
-      console.log('⚠️ No PayPal signature found in headers');
-      console.log('🧪 Allowing for testing purposes');
-      return true;
-    }
-
-    console.log('✅ PayPal signature found:', expectedSignature?.substring(0, 20) + '...');
-    console.log('⚠️ Webhook signature verification skipped for testing');
-    return true;
-
-  } catch (error) {
-    console.error('❌ Webhook verification failed:', error);
-    return false;
-  }
-}
-
-// 🆕 NEW: Log purchase activity for bot detection
-async function logPurchaseActivity(userId, eventId, paymentId, quantity) {
-  try {
-    console.log('📝 ============ LOGGING PURCHASE ACTIVITY ============');
-    console.log('   👤 User ID:', userId);
-    console.log('   🎫 Event ID:', eventId);
-    console.log('   💰 Payment ID:', paymentId);
-    console.log('   📊 Quantity:', quantity);
-
-    const { data, error } = await supabase
-      .from('purchase_history')
-      .insert({
-        user_id: userId,
-        event_id: eventId,
-        payment_id: paymentId,
-        quantity: quantity,
-        status: 'normal',
-        flag: 'none'
-      });
-
-    if (error) {
-      console.error('❌ Failed to log purchase activity:', error);
-      console.error('   📄 Error details:', error.message);
-      // Don't throw error - just log it, we don't want to break ticket creation
-    } else {
-      console.log('✅ Purchase activity logged successfully');
-      console.log('   📋 Log entry created for bot detection system');
-    }
-
-    return data;
-  } catch (error) {
-    console.error('❌ Error in logPurchaseActivity:', error);
-    // Don't throw - logging failure shouldn't stop ticket creation
-  }
-}
-
-// Generate token ID for blockchain (convert UUID to uint256) with logging
-function generateTokenId(ticketUuid) {
-  try {
-    console.log('🔢 Generating blockchain token ID...');
-    console.log('   🎫 Input UUID:', ticketUuid);
-    
-    // Create deterministic hash from UUID
-    const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
-    console.log('   🔐 SHA256 Hash:', hash);
-    
-    // For PostgreSQL bigint compatibility, use only first 15 hex characters (60 bits)
-    const truncatedHash = hash.substring(0, 15);
-    console.log('   ✂️ Truncated Hash (15 chars):', truncatedHash);
-    
-    // Convert to BigInt then to string
-    const tokenId = BigInt('0x' + truncatedHash);
-    const tokenIdString = tokenId.toString();
-    console.log('   🔢 Final Token ID:', tokenIdString);
-    
-    return tokenIdString;
-  } catch (error) {
-    console.error('❌ Token ID generation failed:', error);
-    
-    // Fallback: use timestamp + random
-    const timestamp = Date.now();
-    const random = Math.floor(Math.random() * 1000);
-    const fallbackId = (timestamp * 1000 + random).toString();
-    console.log('🆘 Using fallback token ID:', fallbackId);
-    
-    return fallbackId;
-  }
-}
 
 export default async function handler(req, res) {
   console.log('🚀 ============ WEBHOOK HANDLER STARTED ============');
@@ -499,42 +380,6 @@ function searchForOrderId(obj, path = '') {
   }
 }
 
-// 🆕 NEW: Log purchase activity for bot detection
-async function logPurchaseActivity(userId, eventId, paymentId, quantity) {
-  try {
-    console.log('📝 ============ LOGGING PURCHASE ACTIVITY ============');
-    console.log('   👤 User ID:', userId);
-    console.log('   🎫 Event ID:', eventId);
-    console.log('   💰 Payment ID:', paymentId);
-    console.log('   📊 Quantity:', quantity);
-
-    const { data, error } = await supabase
-      .from('purchase_history')
-      .insert({
-        user_id: userId,
-        event_id: eventId,
-        payment_id: paymentId,
-        quantity: quantity,
-        status: 'normal',
-        flag: 'none'
-      });
-
-    if (error) {
-      console.error('❌ Failed to log purchase activity:', error);
-      console.error('   📄 Error details:', error.message);
-      // Don't throw error - just log it, we don't want to break ticket creation
-    } else {
-      console.log('✅ Purchase activity logged successfully');
-      console.log('   📋 Log entry created for bot detection system');
-    }
-
-    return data;
-  } catch (error) {
-    console.error('❌ Error in logPurchaseActivity:', error);
-    // Don't throw - logging failure shouldn't stop ticket creation
-  }
-}
-
 // Manual payment processing function with detailed logging
 async function processPaymentManually(payment, paypalTransactionId) {
   try {
@@ -606,9 +451,44 @@ async function processPaymentManually(payment, paypalTransactionId) {
     console.log('📊 Calculated Quantity:', quantity);
     console.log(`🎯 Creating ${quantity} tickets for event: ${event.event_name}`);
 
-    // 🆕 NEW: Log purchase activity for bot detection BEFORE updating payment status
-    console.log('📝 ============ BOT DETECTION LOGGING ============');
-    await logPurchaseActivity(payment.user_id, event.event_id, payment.payment_id, quantity);
+    // 🆕 ADD PURCHASE HISTORY LOG HERE
+    console.log('📝 ============ PURCHASE HISTORY LOGGING ============');
+    console.log('📋 Logging purchase activity for bot detection...');
+    
+    try {
+      const { data: purchaseLog, error: logError } = await supabase
+        .from('purchase_history')
+        .insert({
+          user_id: payment.user_id,
+          event_id: event.event_id,
+          payment_id: payment.payment_id,
+          purchase_timestamp: new Date().toISOString(),
+          quantity: quantity,
+          status: 'normal',
+          flag: 'none'
+        })
+        .select()
+        .single();
+
+      if (logError) {
+        console.error('❌ Failed to log purchase history:', logError);
+        console.error('   📄 Error message:', logError.message);
+        // Don't throw error - continue with ticket creation
+        console.log('⚠️ Continuing with ticket creation despite logging failure');
+      } else {
+        console.log('✅ Purchase history logged successfully:');
+        console.log('   🆔 Log ID:', purchaseLog.id);
+        console.log('   👤 User ID:', purchaseLog.user_id);
+        console.log('   🎭 Event ID:', purchaseLog.event_id);
+        console.log('   💳 Payment ID:', purchaseLog.payment_id);
+        console.log('   📊 Quantity:', purchaseLog.quantity);
+        console.log('   📋 Status:', purchaseLog.status);
+        console.log('   🏷️ Flag:', purchaseLog.flag);
+      }
+    } catch (logError) {
+      console.error('❌ Exception during purchase logging:', logError);
+      console.log('⚠️ Continuing with ticket creation despite logging exception');
+    }
 
     // Update payment status first
     console.log('💾 ============ PAYMENT STATUS UPDATE ============');
@@ -723,7 +603,66 @@ async function processPaymentManually(payment, paypalTransactionId) {
       console.log(`   🎫 Ticket ${index + 1}: ${ticket.ticket_id}`);
     });
 
-    // Register tickets in blockchain with detailed logging
+    // Register tickets in blockchain
+    console.log('🔗 ============ BLOCKCHAIN REGISTRATION ============');
+    console.log(`⛓️ Attempting to register ${tokenIds.length} tickets on blockchain...`);
+    
+    const blockchainResult = await registerTicketsInBlockchain(tokenIds, tickets);
+
+    if (blockchainResult.success) {
+      console.log('✅ ============ BLOCKCHAIN SUCCESS ============');
+      console.log('🔗 Transaction Hash:', blockchainResult.transactionHash);
+      console.log('⛽ Gas Used:', blockchainResult.gasUsed);
+      console.log('📦 Block Number:', blockchainResult.blockNumber);
+      
+      // Update tickets as blockchain-registered
+      console.log('💾 Updating ticket NFT status to "minted"...');
+      await supabase
+        .from('tickets')
+        .update({ 
+          nft_mint_status: 'minted',
+          blockchain_registered: true,
+          blockchain_tx_hash: blockchainResult.transactionHash
+        })
+        .in('ticket_id', tickets.map(t => t.ticket_id));
+        
+      console.log(`✅ Successfully registered ${quantity} tickets in blockchain`);
+      
+    } else {
+      console.error('❌ ============ BLOCKCHAIN FAILURE ============');
+      console.error('🔥 Error:', blockchainResult.error);
+      console.error('⏰ Failed at:', blockchainResult.timestamp);
+      
+      // Update tickets with failed status but keep them valid in database
+      console.log('💾 Updating ticket NFT status to "failed"...');
+      await supabase
+        .from('tickets')
+        .update({ 
+          nft_mint_status: 'failed',
+          blockchain_registered: false,
+          blockchain_error: blockchainResult.error
+        })
+        .in('ticket_id', tickets.map(t => t.ticket_id));
+        
+      console.log('⚠️ Tickets remain valid in database despite blockchain failure');
+    }
+
+    console.log('🎉 ============ PAYMENT PROCESSING COMPLETE ============');
+    console.log(`✅ Successfully processed payment: ${payment.payment_id}`);
+    console.log(`🎫 Created ${quantity} tickets for user: ${payment.user_id}`);
+    console.log(`🎭 Event: ${event.event_name}`);
+    console.log(`💰 Amount: $${payment.amount}`);
+    console.log(`📝 Purchase logged for bot detection monitoring`);
+
+  } catch (error) {
+    console.error('❌ ============ PAYMENT PROCESSING FAILED ============');
+    console.error('🔥 Error in processPaymentManually:', error.message);
+    console.error('📊 Error stack:', error.stack);
+    throw error;
+  }
+}
+
+// Register tickets in blockchain with detailed logging
 async function registerTicketsInBlockchain(tokenIds, tickets) {
   try {
     console.log('🔗 ============ BLOCKCHAIN REGISTRATION DETAILS ============');
@@ -829,6 +768,70 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
   }
 }
 
+// Generate token ID for blockchain (convert UUID to uint256) with logging
+function generateTokenId(ticketUuid) {
+  try {
+    console.log('🔢 Generating blockchain token ID...');
+    console.log('   🎫 Input UUID:', ticketUuid);
+    
+    // Create deterministic hash from UUID
+    const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
+    console.log('   🔐 SHA256 Hash:', hash);
+    
+    // For PostgreSQL bigint compatibility, use only first 15 hex characters (60 bits)
+    const truncatedHash = hash.substring(0, 15);
+    console.log('   ✂️ Truncated Hash (15 chars):', truncatedHash);
+    
+    // Convert to BigInt then to string
+    const tokenId = BigInt('0x' + truncatedHash);
+    const tokenIdString = tokenId.toString();
+    console.log('   🔢 Final Token ID:', tokenIdString);
+    
+    return tokenIdString;
+  } catch (error) {
+    console.error('❌ Token ID generation failed:', error);
+    
+    // Fallback: use timestamp + random
+    const timestamp = Date.now();
+    const random = Math.floor(Math.random() * 1000);
+    const fallbackId = (timestamp * 1000 + random).toString();
+    console.log('🆘 Using fallback token ID:', fallbackId);
+    
+    return fallbackId;
+  }
+}
+
+// Verify PayPal webhook signature with logging
+async function verifyPayPalWebhook(req) {
+  try {
+    console.log('🔐 Verifying PayPal webhook signature...');
+    
+    const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+    const headers = req.headers;
+    const body = JSON.stringify(req.body);
+
+    console.log('📋 Webhook verification details:');
+    console.log('   🆔 Webhook ID:', webhookId || 'NOT SET');
+    console.log('   📝 Headers present:', Object.keys(headers));
+    
+    const expectedSignature = headers['paypal-transmission-sig'];
+    
+    if (!expectedSignature) {
+      console.log('⚠️ No PayPal signature found in headers');
+      console.log('🧪 Allowing for testing purposes');
+      return true;
+    }
+
+    console.log('✅ PayPal signature found:', expectedSignature?.substring(0, 20) + '...');
+    console.log('⚠️ Webhook signature verification skipped for testing');
+    return true;
+
+  } catch (error) {
+    console.error('❌ Webhook verification failed:', error);
+    return false;
+  }
+}
+
 // Capture PayPal order function
 async function capturePayPalOrder(paypal, environment, orderId) {
   try {
@@ -917,62 +920,3 @@ async function sendPaymentSuccessNotification(userId, paymentId) {
     console.error('❌ Failed to send push notification:', error);
   }
 }
-    console.log('🔗 ============ BLOCKCHAIN REGISTRATION ============');
-    console.log(`⛓️ Attempting to register ${tokenIds.length} tickets on blockchain...`);
-    
-    const blockchainResult = await registerTicketsInBlockchain(tokenIds, tickets);
-
-    if (blockchainResult.success) {
-      console.log('✅ ============ BLOCKCHAIN SUCCESS ============');
-      console.log('🔗 Transaction Hash:', blockchainResult.transactionHash);
-      console.log('⛽ Gas Used:', blockchainResult.gasUsed);
-      console.log('📦 Block Number:', blockchainResult.blockNumber);
-      
-      // Update tickets as blockchain-registered
-      console.log('💾 Updating ticket NFT status to "minted"...');
-      await supabase
-        .from('tickets')
-        .update({ 
-          nft_mint_status: 'minted',
-          blockchain_registered: true,
-          blockchain_tx_hash: blockchainResult.transactionHash
-        })
-        .in('ticket_id', tickets.map(t => t.ticket_id));
-        
-      console.log(`✅ Successfully registered ${quantity} tickets in blockchain`);
-      
-    } else {
-      console.error('❌ ============ BLOCKCHAIN FAILURE ============');
-      console.error('🔥 Error:', blockchainResult.error);
-      console.error('⏰ Failed at:', blockchainResult.timestamp);
-      
-      // Update tickets with failed status but keep them valid in database
-      console.log('💾 Updating ticket NFT status to "failed"...');
-      await supabase
-        .from('tickets')
-        .update({ 
-          nft_mint_status: 'failed',
-          blockchain_registered: false,
-          blockchain_error: blockchainResult.error
-        })
-        .in('ticket_id', tickets.map(t => t.ticket_id));
-        
-      console.log('⚠️ Tickets remain valid in database despite blockchain failure');
-    }
-
-    console.log('🎉 ============ PAYMENT PROCESSING COMPLETE ============');
-    console.log(`✅ Successfully processed payment: ${payment.payment_id}`);
-    console.log(`🎫 Created ${quantity} tickets for user: ${payment.user_id}`);
-    console.log(`🎭 Event: ${event.event_name}`);
-    console.log(`💰 Amount: $${payment.amount}`);
-    console.log(`📝 Purchase activity logged for bot detection`);
-
-  } catch (error) {
-    console.error('❌ ============ PAYMENT PROCESSING FAILED ============');
-    console.error('🔥 Error in processPaymentManually:', error.message);
-    console.error('📊 Error stack:', error.stack);
-    throw error;
-  }
-}
-
-// Register tickets
