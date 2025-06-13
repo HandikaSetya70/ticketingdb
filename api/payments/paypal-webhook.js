@@ -771,32 +771,42 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
 // Generate token ID for blockchain (convert UUID to uint256) with logging
 function generateTokenId(ticketUuid) {
   try {
-    console.log('🔢 Generating blockchain token ID...');
+    console.log('🔢 Generating safe blockchain token ID...');
     console.log('   🎫 Input UUID:', ticketUuid);
     
     // Create deterministic hash from UUID
     const hash = crypto.createHash('sha256').update(ticketUuid).digest('hex');
     console.log('   🔐 SHA256 Hash:', hash);
     
-    // For PostgreSQL bigint compatibility, use only first 15 hex characters (60 bits)
-    const truncatedHash = hash.substring(0, 15);
-    console.log('   ✂️ Truncated Hash (15 chars):', truncatedHash);
+    // Use only 10 hex characters (40 bits) for safe JavaScript handling
+    const truncatedHash = hash.substring(0, 10); // ✅ Reduced from 12 to 10
+    console.log('   ✂️ Truncated Hash (10 chars):', truncatedHash);
     
-    // Convert to BigInt then to string
-    const tokenId = BigInt('0x' + truncatedHash);
+    // Convert to number - now guaranteed to be safe
+    const tokenId = parseInt(truncatedHash, 16);
     const tokenIdString = tokenId.toString();
+    
     console.log('   🔢 Final Token ID:', tokenIdString);
+    console.log('   📏 Token ID length:', tokenIdString.length);
+    console.log('   ✅ Is safe integer:', Number.isSafeInteger(tokenId));
+    
+    // Validate it's within safe range
+    if (!Number.isSafeInteger(tokenId)) {
+      console.error('⚠️ Generated token ID is not safe integer, using fallback');
+      // Fallback to timestamp-based safe ID
+      const fallbackId = Math.floor(Date.now() / 1000).toString(); // Unix timestamp
+      console.log('🆘 Fallback token ID:', fallbackId);
+      return fallbackId;
+    }
     
     return tokenIdString;
+    
   } catch (error) {
     console.error('❌ Token ID generation failed:', error);
     
-    // Fallback: use timestamp + random
-    const timestamp = Date.now();
-    const random = Math.floor(Math.random() * 1000);
-    const fallbackId = (timestamp * 1000 + random).toString();
-    console.log('🆘 Using fallback token ID:', fallbackId);
-    
+    // Fallback: use timestamp (guaranteed safe)
+    const fallbackId = Math.floor(Date.now() / 1000).toString();
+    console.log('🆘 Emergency fallback token ID:', fallbackId);
     return fallbackId;
   }
 }
