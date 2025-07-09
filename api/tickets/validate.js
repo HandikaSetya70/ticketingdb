@@ -1,5 +1,5 @@
 // /api/tickets/validate.js
-// QR Code ticket validation endpoint for scanner app with enhanced blockchain validation
+// QR Code ticket validation endpoint for scanner app with bound names support
 
 import { createClient } from '@supabase/supabase-js';
 
@@ -8,19 +8,20 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Blockchain configuration
+// Blockchain configuration - UPDATED CONTRACT ADDRESS
 const BLOCKCHAIN_CONFIG = {
   rpcUrl: process.env.ETHEREUM_RPC_URL || 'https://sepolia.infura.io/v3/' + process.env.INFURA_PROJECT_ID,
-  contractAddress: process.env.REVOCATION_CONTRACT_ADDRESS || '0x86d22947cE0D2908eC0CAC78f7EC405f15cB9e50',
+  contractAddress: process.env.REVOCATION_CONTRACT_ADDRESS || '0x8d968bCA279E3d981A072e8E72591bf8424DbC1f', // NEW CONTRACT
   privateKey: process.env.ADMIN_PRIVATE_KEY,
   network: 'sepolia'
 };
 
-// Contract ABI for ticket validation
+// UPDATED Contract ABI for ticket validation with bound names
 const CONTRACT_ABI = [
   "function getTicketStatus(uint256 tokenId) external view returns (uint8)",
   "function isValidForEntry(uint256 tokenId) external view returns (bool)",
-  "function isRevoked(uint256 tokenId) external view returns (bool)"
+  "function isRevoked(uint256 tokenId) external view returns (bool)",
+  "function getBoundName(uint256 tokenId) external view returns (string memory)" // NEW
 ];
 
 export default async function handler(req, res) {
@@ -65,11 +66,12 @@ export default async function handler(req, res) {
     let ticketData;
     
     try {
-      // Try to parse as JSON first (new format)
+      // Try to parse as JSON first (new format with bound names)
       ticketData = JSON.parse(qr_data);
       console.log('✅ QR data parsed as JSON:');
       console.log('   🎫 Ticket ID:', ticketData.ticket_id);
       console.log('   🔗 Blockchain Token ID:', ticketData.blockchain_token_id);
+      console.log('   📝 Bound Name (QR):', ticketData.bound_name); // NEW
       console.log('   🎭 Event ID:', ticketData.event_id);
       console.log('   🔐 Validation Hash:', ticketData.validation_hash);
       
@@ -82,11 +84,13 @@ export default async function handler(req, res) {
         ticketData = {
           ticket_id: parts[1],
           validation_hash: parts[2],
-          blockchain_token_id: parts[3] || null
+          blockchain_token_id: parts[3] || null,
+          bound_name: parts[4] || null // NEW: bound name might be in position 4
         };
         console.log('✅ QR data parsed as simple format:');
         console.log('   🎫 Ticket ID:', ticketData.ticket_id);
         console.log('   🔐 Validation Hash:', ticketData.validation_hash);
+        console.log('   📝 Bound Name (QR):', ticketData.bound_name);
       } else {
         console.error('❌ Invalid QR code format');
         return res.status(400).json({
@@ -102,7 +106,7 @@ export default async function handler(req, res) {
       }
     }
 
-    const { ticket_id, blockchain_token_id, validation_hash, event_id } = ticketData;
+    const { ticket_id, blockchain_token_id, validation_hash, event_id, bound_name: qr_bound_name } = ticketData;
 
     if (!ticket_id) {
       return res.status(400).json({
@@ -112,7 +116,7 @@ export default async function handler(req, res) {
       });
     }
 
-    // 1. DATABASE VALIDATION
+    // 1. DATABASE VALIDATION - NOW INCLUDES BOUND_NAME
     console.log('💾 ============ DATABASE VALIDATION ============');
     console.log('🔍 Looking up ticket in database:', ticket_id);
     
@@ -154,6 +158,7 @@ export default async function handler(req, res) {
     console.log('✅ Ticket found in database:');
     console.log('   🎫 Ticket Number:', ticket.ticket_number);
     console.log('   📊 Database Status:', ticket.ticket_status);
+    console.log('   📝 Database Bound Name:', ticket.bound_name); // NEW
     console.log('   🎭 Event:', ticket.events?.event_name);
     console.log('   👤 Holder:', ticket.users?.id_name);
     console.log('   ⛓️ Blockchain Registered:', ticket.blockchain_registered);
@@ -169,12 +174,13 @@ export default async function handler(req, res) {
     console.log('   ⏰ Current Time:', now.toISOString());
     console.log('   ⏳ Event has passed:', eventHasPassed);
 
-    // 2. BLOCKCHAIN VALIDATION
+    // 2. BLOCKCHAIN VALIDATION WITH BOUND NAMES
     console.log('🔗 ============ BLOCKCHAIN VALIDATION ============');
     let blockchainStatus = {
         is_revoked: false,
         is_valid: false,
         contract_status: 0,
+        bound_name: null, // NEW
         last_checked: new Date().toISOString(),
         contract_verified: false,
         error: null
@@ -190,12 +196,52 @@ export default async function handler(req, res) {
         console.log('   📊 Status:', blockchainStatus.contract_status);
         console.log('   🎫 Is Valid:', blockchainStatus.is_valid);
         console.log('   🚫 Is Revoked:', blockchainStatus.is_revoked);
+        console.log('   📝 Blockchain Bound Name:', blockchainStatus.bound_name); // NEW
         console.log('   ❌ Error:', blockchainStatus.error || 'None');
     } else {
         console.log('⚠️ No blockchain token ID found, skipping blockchain validation');
     }
 
-    // 3. COMBINED VALIDATION LOGIC
+    // 3. BOUND NAME VERIFICATION
+    console.log('📝 ============ BOUND NAME VERIFICATION ============');
+    let boundNameVerification = {
+        database_bound_name: ticket.bound_name || null,
+        blockchain_bound_name: blockchainStatus.bound_name || null,
+        qr_bound_name: qr_bound_name || null,
+        names_match: false,
+        verification_status: 'unknown'
+    };
+
+    // Check if bound names match across sources
+    const dbName = boundNameVerification.database_bound_name;
+    const bcName = boundNameVerification.blockchain_bound_name;
+    const qrName = boundNameVerification.qr_bound_name;
+
+    console.log('📝 Bound name comparison:');
+    console.log('   💾 Database:', dbName || 'Not set');
+    console.log('   🔗 Blockchain:', bcName || 'Not available');
+    console.log('   📱 QR Code:', qrName || 'Not in QR');
+
+    if (dbName && bcName) {
+        // Both database and blockchain have names
+        boundNameVerification.names_match = dbName === bcName;
+        boundNameVerification.verification_status = boundNameVerification.names_match ? 'verified' : 'mismatch';
+        console.log('   🔍 DB vs Blockchain match:', boundNameVerification.names_match);
+    } else if (dbName && !bcName) {
+        // Only database has name (blockchain verification failed or not registered)
+        boundNameVerification.verification_status = 'database_only';
+        console.log('   ⚠️ Only database has bound name');
+    } else if (!dbName && !bcName) {
+        // No bound names available (legacy ticket)
+        boundNameVerification.verification_status = 'legacy_ticket';
+        console.log('   📜 Legacy ticket without bound names');
+    } else {
+        // Only blockchain has name (unusual case)
+        boundNameVerification.verification_status = 'blockchain_only';
+        console.log('   🔗 Only blockchain has bound name');
+    }
+
+    // 4. COMBINED VALIDATION LOGIC (UPDATED WITH BOUND NAME CHECKS)
     console.log('🎯 ============ FINAL VALIDATION DECISION ============');
     
     let validationResult;
@@ -257,6 +303,17 @@ export default async function handler(req, res) {
             sound: "error_beep"
         };
     }
+    // NEW: Priority 6: Check bound name mismatch (warning level)
+    else if (boundNameVerification.verification_status === 'mismatch') {
+        console.log('⚠️ DECISION: Valid ticket but bound name mismatch detected');
+        validationResult = 'valid_with_warning';
+        statusMessage = 'Valid ticket - but bound name mismatch detected';
+        uiFeedback = {
+            color: "yellow",
+            message: "✅ VALID ⚠️ NAME MISMATCH",
+            sound: "warning_beep"
+        };
+    }
     // All checks passed - ticket is valid
     else {
         console.log('✅ DECISION: Ticket is valid for entry');
@@ -274,14 +331,15 @@ export default async function handler(req, res) {
         };
     }
 
-    // 4. LOG VALIDATION ATTEMPT
+    // 5. LOG VALIDATION ATTEMPT
     console.log('📝 ============ LOGGING VALIDATION ============');
     await logValidationAttempt(ticket_id, scanner_info, validationResult, statusMessage);
 
-    // 5. RETURN VALIDATION RESULT
+    // 6. RETURN VALIDATION RESULT WITH BOUND NAMES
     console.log('📤 ============ SENDING RESPONSE ============');
     console.log('   📊 Result:', validationResult);
     console.log('   💬 Message:', statusMessage);
+    console.log('   📝 Primary Bound Name:', boundNameVerification.database_bound_name || boundNameVerification.blockchain_bound_name);
     
     const response = {
       status: 'success',
@@ -291,10 +349,12 @@ export default async function handler(req, res) {
         ticket_number: ticket.ticket_number,
         event_name: ticket.events?.event_name || 'Unknown Event',
         holder_name: ticket.users?.id_name || 'Unknown',
+        bound_name: boundNameVerification.database_bound_name || boundNameVerification.blockchain_bound_name, // NEW: Primary bound name
         entry_type: ticket.ticket_status === 'valid' ? 'General Admission' : ticket.ticket_status,
         event_date: ticket.events?.event_date,
         venue: ticket.events?.venue
       },
+      bound_name_verification: boundNameVerification, // NEW: Detailed bound name info
       blockchain_status: blockchainStatus,
       ui_feedback: uiFeedback,
       validation_details: {
@@ -305,7 +365,8 @@ export default async function handler(req, res) {
         database_status: ticket.ticket_status,
         blockchain_checked: blockchainStatus.contract_verified,
         blockchain_verified: blockchainStatus.contract_verified,
-        ticket_exists_on_blockchain: blockchainStatus.is_valid || blockchainStatus.is_revoked
+        ticket_exists_on_blockchain: blockchainStatus.is_valid || blockchainStatus.is_revoked,
+        bound_name_status: boundNameVerification.verification_status // NEW
       }
     };
 
@@ -331,7 +392,7 @@ export default async function handler(req, res) {
   }
 }
 
-// Enhanced blockchain validation function
+// UPDATED: Enhanced blockchain validation function with bound names
 async function validateTicketOnBlockchain(tokenId) {
   try {
     console.log('🔗 ============ BLOCKCHAIN CONNECTION ============');
@@ -346,6 +407,7 @@ async function validateTicketOnBlockchain(tokenId) {
         is_revoked: false,
         is_valid: false,
         contract_status: 0,
+        bound_name: null,
         last_checked: new Date().toISOString(),
         contract_verified: false,
         error: 'Blockchain configuration missing'
@@ -380,6 +442,24 @@ async function validateTicketOnBlockchain(tokenId) {
     console.log('   ❌ Invalid (0):', statusNumber === 0);
     console.log('   ✅ Valid (1):', statusNumber === 1);
     console.log('   🚫 Revoked (2):', statusNumber === 2);
+
+    // NEW: Get bound name from blockchain
+    let boundName = null;
+    try {
+      if (statusNumber === 1 || statusNumber === 2) { // Only get bound name if ticket exists
+        console.log('📞 Calling contract.getBoundName...');
+        const boundNamePromise = contract.getBoundName(tokenId);
+        const boundNameTimeout = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('getBoundName timeout')), 5000)
+        );
+        
+        boundName = await Promise.race([boundNamePromise, boundNameTimeout]);
+        console.log('   📝 Blockchain bound name:', boundName || 'Empty');
+      }
+    } catch (boundNameError) {
+      console.log('⚠️ Failed to get bound name from blockchain:', boundNameError.message);
+      // Continue without bound name
+    }
 
     // Additional verification calls
     let isValidForEntry = false;
@@ -424,6 +504,7 @@ async function validateTicketOnBlockchain(tokenId) {
       is_revoked: statusNumber === 2,
       is_valid: statusNumber === 1,
       contract_status: statusNumber,
+      bound_name: boundName, // NEW: Include bound name from blockchain
       last_checked: new Date().toISOString(),
       contract_verified: true,
       error: null,
@@ -456,6 +537,7 @@ async function validateTicketOnBlockchain(tokenId) {
       is_revoked: false,
       is_valid: false,
       contract_status: 0,
+      bound_name: null, // NEW
       last_checked: new Date().toISOString(),
       contract_verified: false,
       error: error.message,
