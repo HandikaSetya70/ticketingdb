@@ -1,5 +1,5 @@
 // /api/payments/paypal-webhook.js
-// Fixed PayPal webhook handler with proper order ID extraction
+// Updated PayPal webhook handler with bound names support
 
 import { createClient } from '@supabase/supabase-js';
 import crypto from 'crypto';
@@ -10,19 +10,20 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Blockchain configuration
+// Blockchain configuration - UPDATED CONTRACT ADDRESS
 const BLOCKCHAIN_CONFIG = {
   rpcUrl: process.env.ETHEREUM_RPC_URL || 'https://sepolia.infura.io/v3/' + process.env.INFURA_PROJECT_ID,
-  contractAddress: process.env.REVOCATION_CONTRACT_ADDRESS || '0x86d22947cE0D2908eC0CAC78f7EC405f15cB9e50',
+  contractAddress: process.env.REVOCATION_CONTRACT_ADDRESS || '0x8d968bCA279E3d981A072e8E72591bf8424DbC1f', // NEW CONTRACT ADDRESS
   privateKey: process.env.ADMIN_PRIVATE_KEY,
   network: 'sepolia'
 };
 
-// Contract ABI for ticket registration
+// UPDATED Contract ABI for ticket registration with bound names
 const CONTRACT_ABI = [
-  "function registerTicket(uint256 tokenId) external",
-  "function batchRegisterTickets(uint256[] calldata tokenIds) external", 
+  "function registerTicket(uint256 tokenId, string calldata boundName) external",
+  "function batchRegisterTickets(uint256[] calldata tokenIds, string[] calldata boundNames) external", 
   "function getTicketStatus(uint256 tokenId) external view returns (uint8)",
+  "function getBoundName(uint256 tokenId) external view returns (string memory)",
   "function owner() external view returns (address)"
 ];
 
@@ -308,6 +309,86 @@ export default async function handler(req, res) {
     console.log('   💰 Database Amount:', payment.amount);
     console.log('   📊 Current Status:', payment.payment_status);
 
+    // NEW: Check for bound names in payment metadata
+    console.log('📝 ============ BOUND NAMES EXTRACTION ============');
+    let boundNames = [];
+    
+    // Try to get bound names from payment metadata
+    if (payment.metadata && typeof payment.metadata === 'object') {
+      console.log('🔍 Payment metadata found:', JSON.stringify(payment.metadata, null, 2));
+      
+      if (payment.metadata.bound_names && Array.isArray(payment.metadata.bound_names)) {
+        boundNames = payment.metadata.bound_names;
+        console.log('✅ Bound names found in payment metadata:', boundNames);
+      } else if (payment.metadata.boundNames && Array.isArray(payment.metadata.boundNames)) {
+        boundNames = payment.metadata.boundNames;
+        console.log('✅ Bound names found in payment metadata (camelCase):', boundNames);
+      } else {
+        console.log('⚠️ Payment metadata exists but no bound_names array found');
+      }
+    } else if (typeof payment.metadata === 'string') {
+      try {
+        const parsedMetadata = JSON.parse(payment.metadata);
+        console.log('🔍 Parsed payment metadata:', JSON.stringify(parsedMetadata, null, 2));
+        
+        if (parsedMetadata.bound_names && Array.isArray(parsedMetadata.bound_names)) {
+          boundNames = parsedMetadata.bound_names;
+          console.log('✅ Bound names found in parsed metadata:', boundNames);
+        } else if (parsedMetadata.boundNames && Array.isArray(parsedMetadata.boundNames)) {
+          boundNames = parsedMetadata.boundNames;
+          console.log('✅ Bound names found in parsed metadata (camelCase):', boundNames);
+        }
+      } catch (parseError) {
+        console.error('❌ Failed to parse payment metadata as JSON:', parseError.message);
+      }
+    } else {
+      console.log('⚠️ No payment metadata found');
+    }
+
+    // Calculate expected quantity
+    const expectedQuantity = Math.round(parseFloat(payment.amount) / parseFloat(payment.ticket_price || 10));
+    console.log('📊 Expected ticket quantity:', expectedQuantity);
+    
+    // Validate bound names
+    if (boundNames.length === 0) {
+      console.error('❌ CRITICAL ERROR: No bound names provided for tickets');
+      console.error('   📊 Expected quantity:', expectedQuantity);
+      console.error('   📝 Bound names array length:', boundNames.length);
+      
+      // Create default bound names as fallback
+      boundNames = [];
+      for (let i = 1; i <= expectedQuantity; i++) {
+        boundNames.push(`Ticket-${i}`);
+      }
+      console.log('🆘 Created fallback bound names:', boundNames);
+      
+      // You might want to return an error here instead:
+      // return res.status(400).json({
+      //   status: 'error',
+      //   message: 'Bound names are required for ticket registration'
+      // });
+    } else if (boundNames.length !== expectedQuantity) {
+      console.error('❌ CRITICAL ERROR: Bound names count mismatch');
+      console.error('   📊 Expected quantity:', expectedQuantity);
+      console.error('   📝 Bound names provided:', boundNames.length);
+      console.error('   📋 Bound names:', boundNames);
+      
+      return res.status(400).json({
+        status: 'error',
+        message: `Bound names count mismatch. Expected ${expectedQuantity}, got ${boundNames.length}`,
+        debug: {
+          expectedQuantity,
+          boundNamesCount: boundNames.length,
+          boundNames
+        }
+      });
+    }
+
+    console.log('✅ Bound names validation passed:');
+    boundNames.forEach((name, index) => {
+      console.log(`   ${index + 1}. "${name}"`);
+    });
+
     // Verify amount matches (only if we have a valid amount)
     if (capturedAmount > 0) {
       console.log('🔍 ============ AMOUNT VERIFICATION ============');
@@ -330,9 +411,9 @@ export default async function handler(req, res) {
       console.log('⚠️ Skipping amount verification (amount not found in webhook)');
     }
 
-    // Process payment and create tickets
+    // Process payment and create tickets with bound names
     console.log('🎫 ============ TICKET CREATION PROCESS ============');
-    await processPaymentManually(payment, paypalTransactionId);
+    await processPaymentManually(payment, paypalTransactionId, boundNames);
 
     // Send push notification (if you have push notification setup)
     console.log('📱 ============ PUSH NOTIFICATION ============');
@@ -380,10 +461,11 @@ function searchForOrderId(obj, path = '') {
   }
 }
 
-// Manual payment processing function with detailed logging
-async function processPaymentManually(payment, paypalTransactionId) {
+// UPDATED: Manual payment processing function with bound names support
+async function processPaymentManually(payment, paypalTransactionId, boundNames) {
   try {
     console.log(`🎫 ============ PAYMENT PROCESSING: ${payment.payment_id} ============`);
+    console.log('📝 Bound names to use:', boundNames);
     
     // Get event details to create tickets
     console.log('🎪 ============ EVENT LOOKUP ============');
@@ -443,12 +525,23 @@ async function processPaymentManually(payment, paypalTransactionId) {
       console.log(`✅ Found matching event: ${event.event_name} (price: $${event.ticket_price})`);
     }
 
-    // Calculate quantity based on payment amount
+    // Calculate quantity based on payment amount and bound names
     console.log('📊 ============ QUANTITY CALCULATION ============');
-    const quantity = Math.round(parseFloat(payment.amount) / parseFloat(event.ticket_price));
+    const quantity = boundNames.length; // Use bound names length as authoritative quantity
+    const calculatedQuantity = Math.round(parseFloat(payment.amount) / parseFloat(event.ticket_price));
+    
     console.log('💰 Payment Amount:', parseFloat(payment.amount));
     console.log('🎫 Ticket Price:', parseFloat(event.ticket_price));
-    console.log('📊 Calculated Quantity:', quantity);
+    console.log('📊 Calculated Quantity:', calculatedQuantity);
+    console.log('📝 Bound Names Quantity:', quantity);
+    
+    if (quantity !== calculatedQuantity) {
+      console.error('❌ Quantity mismatch between payment and bound names');
+      console.error('   💰 Payment-based quantity:', calculatedQuantity);
+      console.error('   📝 Bound names quantity:', quantity);
+      throw new Error(`Quantity mismatch: payment suggests ${calculatedQuantity} tickets, but ${quantity} bound names provided`);
+    }
+    
     console.log(`🎯 Creating ${quantity} tickets for event: ${event.event_name}`);
 
     // 🆕 ADD PURCHASE HISTORY LOG HERE
@@ -507,12 +600,12 @@ async function processPaymentManually(payment, paypalTransactionId) {
     console.log('✅ Payment status updated to "confirmed"');
     console.log('✅ PayPal transaction ID saved:', paypalTransactionId);
 
-    // Create tickets with blockchain token IDs
+    // Create tickets with blockchain token IDs and bound names
     console.log('🎫 ============ TICKET GENERATION ============');
     const tickets = [];
     const tokenIds = [];
     
-    console.log(`🔄 Generating ${quantity} individual tickets...`);
+    console.log(`🔄 Generating ${quantity} individual tickets with bound names...`);
     
     for (let i = 1; i <= quantity; i++) {
       console.log(`🎫 ---- Generating Ticket ${i}/${quantity} ----`);
@@ -526,12 +619,16 @@ async function processPaymentManually(payment, paypalTransactionId) {
       const blockchainTicketId = `TOKEN-${tokenId}`;
       console.log('   🏷️ Blockchain Ticket ID:', blockchainTicketId);
       
+      const boundName = boundNames[i - 1]; // Get corresponding bound name
+      console.log('   📝 Bound Name:', boundName);
+      
       const qrData = {
         ticket_id: ticketId,
         blockchain_token_id: tokenId,
+        bound_name: boundName, // Include bound name in QR data
         event_id: event.event_id,
         validation_hash: crypto.createHash('sha256')
-          .update(`${ticketId}-${tokenId}-${process.env.QR_SECRET}`)
+          .update(`${ticketId}-${tokenId}-${boundName}-${process.env.QR_SECRET}`)
           .digest('hex'),
         issued_at: new Date().toISOString()
       };
@@ -550,6 +647,7 @@ async function processPaymentManually(payment, paypalTransactionId) {
         purchase_date: new Date().toISOString(),
         ticket_status: 'valid',
         blockchain_ticket_id: blockchainTicketId,
+        bound_name: boundName, // NEW: Store bound name in ticket
         qr_code_data: JSON.stringify(qrData),
         qr_code_base64: qrCodeDataURL,
         qr_code_hash: qrCodeHash,
@@ -561,14 +659,15 @@ async function processPaymentManually(payment, paypalTransactionId) {
         nft_token_id: tokenId,
         nft_mint_status: 'pending',
         nft_metadata: {
-          name: `${event.event_name} Ticket #${i}`,
-          description: `Ticket for ${event.event_name} at ${event.venue}`,
+          name: `${event.event_name} Ticket #${i} - ${boundName}`, // Include bound name in metadata
+          description: `Ticket for ${event.event_name} at ${event.venue} - Bound to: ${boundName}`,
           image: `https://via.placeholder.com/400x600/007bff/ffffff?text=Ticket+${i}`,
           attributes: [
             { trait_type: 'Event', value: event.event_name },
             { trait_type: 'Venue', value: event.venue },
             { trait_type: 'Ticket Number', value: i },
             { trait_type: 'Total in Group', value: quantity },
+            { trait_type: 'Bound Name', value: boundName }, // NEW: Bound name attribute
             { trait_type: 'Network', value: BLOCKCHAIN_CONFIG.network }
           ]
         }
@@ -577,11 +676,12 @@ async function processPaymentManually(payment, paypalTransactionId) {
       console.log('   👥 Parent/Child Info:');
       console.log('      🎫 Is Parent:', ticket.is_parent_ticket);
       console.log('      👪 Parent ID:', ticket.parent_ticket_id || 'N/A (this is parent)');
+      console.log('      📝 Bound Name:', boundName);
 
       tickets.push(ticket);
       tokenIds.push(tokenId);
       
-      console.log(`   ✅ Ticket ${i} prepared successfully`);
+      console.log(`   ✅ Ticket ${i} prepared successfully with bound name: ${boundName}`);
     }
 
     // Insert tickets into database
@@ -600,14 +700,14 @@ async function processPaymentManually(payment, paypalTransactionId) {
     
     console.log('✅ All tickets successfully inserted into database');
     tickets.forEach((ticket, index) => {
-      console.log(`   🎫 Ticket ${index + 1}: ${ticket.ticket_id}`);
+      console.log(`   🎫 Ticket ${index + 1}: ${ticket.ticket_id} → ${ticket.bound_name}`);
     });
 
-    // Register tickets in blockchain
+    // Register tickets in blockchain WITH BOUND NAMES
     console.log('🔗 ============ BLOCKCHAIN REGISTRATION ============');
-    console.log(`⛓️ Attempting to register ${tokenIds.length} tickets on blockchain...`);
+    console.log(`⛓️ Attempting to register ${tokenIds.length} tickets on blockchain with bound names...`);
     
-    const blockchainResult = await registerTicketsInBlockchain(tokenIds, tickets);
+    const blockchainResult = await registerTicketsInBlockchain(tokenIds, boundNames, tickets);
 
     if (blockchainResult.success) {
       console.log('✅ ============ BLOCKCHAIN SUCCESS ============');
@@ -626,7 +726,7 @@ async function processPaymentManually(payment, paypalTransactionId) {
         })
         .in('ticket_id', tickets.map(t => t.ticket_id));
         
-      console.log(`✅ Successfully registered ${quantity} tickets in blockchain`);
+      console.log(`✅ Successfully registered ${quantity} tickets in blockchain with bound names`);
       
     } else {
       console.error('❌ ============ BLOCKCHAIN FAILURE ============');
@@ -651,8 +751,9 @@ async function processPaymentManually(payment, paypalTransactionId) {
     console.log(`✅ Successfully processed payment: ${payment.payment_id}`);
     console.log(`🎫 Created ${quantity} tickets for user: ${payment.user_id}`);
     console.log(`🎭 Event: ${event.event_name}`);
-    console.log(`💰 Amount: $${payment.amount}`);
+    console.log(`💰 Amount: ${payment.amount}`);
     console.log(`📝 Purchase logged for bot detection monitoring`);
+    console.log(`📝 Bound names used:`, boundNames);
 
   } catch (error) {
     console.error('❌ ============ PAYMENT PROCESSING FAILED ============');
@@ -662,10 +763,10 @@ async function processPaymentManually(payment, paypalTransactionId) {
   }
 }
 
-// Register tickets in blockchain with detailed logging
-async function registerTicketsInBlockchain(tokenIds, tickets) {
+// UPDATED: Register tickets in blockchain with bound names support
+async function registerTicketsInBlockchain(tokenIds, boundNames, tickets) {
   try {
-    console.log('🔗 ============ BLOCKCHAIN REGISTRATION DETAILS ============');
+    console.log('🔗 ============ BLOCKCHAIN REGISTRATION WITH BOUND NAMES ============');
     
     // Import ethers dynamically
     const ethersModule = await import('ethers');
@@ -684,6 +785,15 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
     console.log('   📋 Contract Address:', BLOCKCHAIN_CONFIG.contractAddress);
     console.log('   🌊 Network:', BLOCKCHAIN_CONFIG.network);
     console.log(`   🎫 Registering ${tokenIds.length} tokens:`, tokenIds);
+    console.log(`   📝 With bound names:`, boundNames);
+    
+    // Validate arrays match
+    if (tokenIds.length !== boundNames.length) {
+      console.error('❌ Token IDs and bound names array length mismatch');
+      console.error('   🎫 Token IDs:', tokenIds.length);
+      console.error('   📝 Bound Names:', boundNames.length);
+      throw new Error(`Array length mismatch: ${tokenIds.length} tokens vs ${boundNames.length} names`);
+    }
     
     // Initialize blockchain provider and contract
     console.log('🔄 Initializing blockchain connection...');
@@ -707,15 +817,20 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
     }
     console.log('✅ Sufficient gas available');
 
-    // Use batch registration for efficiency
-    console.log('📝 Preparing blockchain transaction...');
+    // UPDATED: Use new contract methods with bound names
+    console.log('📝 Preparing blockchain transaction with bound names...');
     let transaction;
+    
     if (tokenIds.length === 1) {
-      console.log(`📝 Using single ticket registration for token: ${tokenIds[0]}`);
-      transaction = await contract.registerTicket(tokenIds[0]);
+      console.log(`📝 Using single ticket registration for token: ${tokenIds[0]} with bound name: "${boundNames[0]}"`);
+      // BEFORE: transaction = await contract.registerTicket(tokenIds[0]);
+      // AFTER: Include bound name parameter
+      transaction = await contract.registerTicket(tokenIds[0], boundNames[0]);
     } else {
-      console.log(`📝 Using batch registration for ${tokenIds.length} tokens`);
-      transaction = await contract.batchRegisterTickets(tokenIds);
+      console.log(`📝 Using batch registration for ${tokenIds.length} tokens with bound names`);
+      // BEFORE: transaction = await contract.batchRegisterTickets(tokenIds);
+      // AFTER: Include bound names array parameter
+      transaction = await contract.batchRegisterTickets(tokenIds, boundNames);
     }
 
     console.log(`⏳ Transaction sent to blockchain: ${transaction.hash}`);
@@ -735,10 +850,13 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
     console.log('⛽ Gas Used:', receipt.gasUsed.toString());
     console.log('🔴 Status:', receipt.status === 1 ? 'SUCCESS' : 'FAILED');
 
-    // Verify registration for first ticket
-    console.log('🔍 Verifying ticket registration...');
+    // Verify registration and bound name for first ticket
+    console.log('🔍 Verifying ticket registration and bound name...');
     const firstTokenStatus = await contract.getTicketStatus(tokenIds[0]);
+    const firstTokenBoundName = await contract.getBoundName(tokenIds[0]);
+    
     console.log('📊 First token status:', firstTokenStatus.toString());
+    console.log('📝 First token bound name:', firstTokenBoundName);
     
     if (firstTokenStatus.toString() !== '1') {
       console.error('❌ Ticket registration verification failed');
@@ -746,7 +864,15 @@ async function registerTicketsInBlockchain(tokenIds, tickets) {
       console.error('   📊 Actual status:', firstTokenStatus.toString());
       throw new Error('Ticket registration verification failed');
     }
-    console.log('✅ Ticket registration verified successfully');
+    
+    if (firstTokenBoundName !== boundNames[0]) {
+      console.error('❌ Bound name verification failed');
+      console.error('   📝 Expected bound name:', boundNames[0]);
+      console.error('   📝 Actual bound name:', firstTokenBoundName);
+      throw new Error('Bound name verification failed');
+    }
+    
+    console.log('✅ Ticket registration and bound name verified successfully');
 
     return {
       success: true,
