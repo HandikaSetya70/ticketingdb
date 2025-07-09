@@ -110,10 +110,10 @@ export default async function handler(req, res) {
       });
     }
 
-    if (quantity < 1 || quantity > 10) {
+    if (quantity < 1 || quantity > 5) {
       return res.status(400).json({
         status: 'error',
-        message: 'Quantity must be between 1 and 10'
+        message: 'Quantity must be between 1 and 5'
       });
     }
 

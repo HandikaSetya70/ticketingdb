@@ -346,7 +346,7 @@ export default async function handler(req, res) {
     }
 
     // Calculate expected quantity
-    const expectedQuantity = Math.round(parseFloat(payment.amount) / parseFloat(payment.ticket_price || 10));
+    const expectedQuantity = payment.metadata?.purchase_details?.quantity || boundNames.length;
     console.log('📊 Expected ticket quantity:', expectedQuantity);
     
     // Validate bound names
